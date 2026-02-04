@@ -1,0 +1,1594 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TaskChute Pro (Supabase Sync)</title>
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+
+  <!-- Supabase JS (UMD) -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+JP:wght@300;400;500;700&display=swap');
+
+    body { font-family: 'Inter','Noto Sans JP',sans-serif; background-color:#f8fafc; }
+
+    .status-running { border-left:4px solid #3b82f6; background:#eff6ff; }
+    .status-paused { border-left:4px solid #f59e0b; background:#fffbeb; }
+    .status-completed { border-left:4px solid #10b981; background:#ecfdf5; opacity:0.75; }
+    .status-pending { border-left:4px solid #cbd5e1; background:white; }
+    .status-future { border-left:4px solid #94a3b8; background:#f1f5f9; opacity:0.9; }
+
+    .custom-scroll::-webkit-scrollbar { width:6px; }
+    .custom-scroll::-webkit-scrollbar-track { background:#f1f1f1; }
+    .custom-scroll::-webkit-scrollbar-thumb { background:#cbd5e1; border-radius:10px; }
+
+    .modal-bg { background-color: rgba(0,0,0,0.4); backdrop-filter: blur(2px); }
+    .tab-active { border-bottom:3px solid #2563eb; color:#2563eb; font-weight:800; }
+
+    .sidebar-transition { transition: transform 0.3s ease-in-out; }
+    @media (max-width:1024px){
+      .sidebar-hidden { transform: translateX(-100%); }
+      .sidebar-overlay { display:none; }
+      .sidebar-open .sidebar-overlay { display:block; }
+    }
+
+    .fab { position:fixed; bottom:2rem; right:2rem; z-index:40; }
+    .view-btn.active { background:#3b82f6; color:white; }
+
+    @media (min-width:1025px){
+      .task-card:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
+      .task-actions { opacity:0; transition: opacity 0.2s; }
+      .task-card:hover .task-actions { opacity:1; }
+    }
+
+    .scrollbar-hide::-webkit-scrollbar{ display:none; }
+    .scrollbar-hide{ -ms-overflow-style:none; scrollbar-width:none; }
+
+    .toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: 1.25rem; z-index: 60; }
+  </style>
+</head>
+<body class="h-screen overflow-hidden flex flex-col text-slate-900">
+
+  <!--
+    =========================
+    ✅ Supabase同期を使うために最初にやること
+    =========================
+
+    1) Supabaseで以下を作成
+       - Project
+       - Table: user_data
+
+       SQL（そのまま実行）:
+
+       create table if not exists public.user_data (
+         user_id uuid primary key references auth.users(id) on delete cascade,
+         data jsonb not null,
+         updated_at timestamptz not null default now()
+       );
+
+       alter table public.user_data enable row level security;
+
+       create policy "Users can read own data" on public.user_data
+         for select using (auth.uid() = user_id);
+
+       create policy "Users can upsert own data" on public.user_data
+         for insert with check (auth.uid() = user_id);
+
+       create policy "Users can update own data" on public.user_data
+         for update using (auth.uid() = user_id);
+
+    2) Authentication
+       - Email（Email+Password）をON
+
+    3) このHTML内の SUPABASE_URL / SUPABASE_ANON_KEY を自分の値に置換
+  -->
+
+  <div id="sidebar-overlay" onclick="toggleSidebar()" class="fixed inset-0 bg-black/20 backdrop-blur-sm z-10 hidden sidebar-overlay"></div>
+
+  <header class="bg-white border-b px-4 py-3 flex justify-between items-center shadow-sm z-30">
+    <div class="flex items-center gap-3">
+      <button onclick="toggleSidebar()" class="p-2 hover:bg-slate-100 rounded-lg lg:hidden" aria-label="menu">
+        <i class="fas fa-bars text-xl text-slate-600"></i>
+      </button>
+      <div class="bg-blue-600 p-2 rounded-lg"><i class="fas fa-clock text-white text-lg"></i></div>
+      <div>
+        <h1 class="font-bold text-lg tracking-tight">TaskChute <span class="text-blue-600">Pro</span></h1>
+        <p class="text-[10px] text-slate-500">最終終了予定: <span id="finish-estimate" class="font-semibold text-blue-600">--:--</span></p>
+      </div>
+    </div>
+
+    <div class="flex items-center gap-3">
+      <div class="hidden sm:flex bg-slate-100 p-1 rounded-lg">
+        <button onclick="setDateRange('today')" id="btn-today" class="view-btn px-4 py-1.5 text-xs font-bold rounded-md transition active">今日</button>
+        <button onclick="setDateRange('week')" id="btn-week" class="view-btn px-4 py-1.5 text-xs font-bold rounded-md transition text-slate-500">今週</button>
+        <button onclick="setDateRange('undated')" id="btn-undated" class="view-btn px-4 py-1.5 text-xs font-bold rounded-md transition text-slate-500">未設定</button>
+      </div>
+
+      <button onclick="openQuickSearch()" class="p-2 hover:bg-slate-100 rounded-lg" aria-label="search">
+        <i class="fas fa-magnifying-glass text-slate-600"></i>
+      </button>
+
+      <!-- Auth status -->
+      <button id="auth-chip" onclick="openAuthModal()" class="hidden sm:flex items-center gap-2 px-3 py-2 rounded-xl border hover:bg-slate-50 text-xs font-bold text-slate-700" aria-label="auth">
+        <i class="fas fa-user"></i>
+        <span id="auth-label">未ログイン</span>
+      </button>
+    </div>
+  </header>
+
+  <div class="flex-1 flex overflow-hidden relative">
+
+    <aside id="sidebar" class="w-72 bg-white border-r flex flex-col fixed inset-y-0 left-0 z-20 sidebar-transition sidebar-hidden lg:relative lg:translate-x-0">
+      <div class="flex border-b text-center text-[11px] font-bold uppercase tracking-wider text-slate-400">
+        <button onclick="switchSidebarTab('plan')" id="tab-plan" class="flex-1 py-4 tab-active">表示設定</button>
+        <button onclick="switchSidebarTab('sync')" id="tab-sync" class="flex-1 py-4">同期・管理</button>
+      </div>
+
+      <div id="sidebar-content" class="flex-1 overflow-y-auto custom-scroll p-4 space-y-6">
+
+        <div id="view-plan" class="space-y-6">
+          <section>
+            <h3 class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">表示フィルタ</h3>
+            <div class="space-y-3 bg-slate-50 p-3 rounded-xl border border-slate-100">
+              <label class="flex items-center justify-between cursor-pointer">
+                <span class="text-xs font-bold text-slate-600">完了済みを表示</span>
+                <input type="checkbox" id="filter-completed" checked onchange="renderAll()" class="w-4 h-4 accent-blue-600" />
+              </label>
+              <label class="flex items-center justify-between cursor-pointer pt-2 border-t">
+                <span class="text-xs font-bold text-slate-600">全未完了を表示</span>
+                <input type="checkbox" id="filter-uncompleted-only" onchange="renderAll()" class="w-4 h-4 accent-red-600" />
+              </label>
+            </div>
+          </section>
+
+          <section>
+            <div class="flex justify-between items-center mb-3">
+              <h3 class="text-[10px] font-black text-slate-400 uppercase tracking-widest">プロジェクト</h3>
+              <button onclick="openProjectModal()" class="text-blue-600 hover:text-blue-700 transition" aria-label="add project">
+                <i class="fas fa-plus-circle"></i>
+              </button>
+            </div>
+            <div id="project-list" class="space-y-1"></div>
+            <div class="mt-2">
+              <button onclick="setProjectFilter(null)" class="w-full text-[10px] font-bold py-2 rounded-lg bg-slate-50 hover:bg-slate-100 border text-slate-600">フィルタ解除</button>
+            </div>
+          </section>
+
+          <section>
+            <h3 class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">保存方式</h3>
+            <div class="bg-slate-50 p-3 rounded-xl border border-slate-100 space-y-2">
+              <div class="text-[11px] text-slate-600 leading-relaxed">
+                この版は <b>Supabase（ログイン必須）</b> でPC/スマホ同期します。ログインしていない場合は <b>LocalStorage</b> に退避します。
+              </div>
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-bold text-slate-600">現在: <span id="storage-mode">---</span></span>
+                <button onclick="openAuthModal()" class="text-xs font-bold text-blue-600 hover:text-blue-700">ログイン</button>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <div id="view-sync" class="hidden p-4 space-y-4">
+          <button onclick="exportToCSV()" class="w-full bg-slate-100 text-slate-600 text-[10px] font-bold py-2 rounded-lg hover:bg-slate-200 transition">CSV出力</button>
+          <button onclick="backupJSON()" class="w-full bg-slate-100 text-slate-600 text-[10px] font-bold py-2 rounded-lg hover:bg-slate-200 transition">JSONバックアップ</button>
+          <label class="block">
+            <span class="text-[10px] font-bold text-slate-500">JSON復元</span>
+            <input type="file" accept="application/json" onchange="restoreJSON(event)" class="mt-1 w-full text-xs" />
+          </label>
+          <button onclick="clearData()" class="w-full bg-red-50 text-red-600 text-[10px] font-bold py-2 rounded-lg hover:bg-red-100 transition">全データ消去</button>
+
+          <div class="pt-2 border-t">
+            <p class="text-[10px] font-bold text-slate-500 mb-2">デバッグ</p>
+            <button onclick="runTests()" class="w-full bg-slate-900 text-white text-[10px] font-bold py-2 rounded-lg hover:bg-slate-800 transition">簡易テスト実行</button>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <main class="flex-1 flex flex-col bg-slate-50 relative overflow-hidden">
+      <div class="p-3 flex gap-3 bg-white border-b overflow-x-auto whitespace-nowrap scrollbar-hide">
+        <div class="flex-1 min-w-[120px] bg-slate-50 p-2 rounded-lg border text-center">
+          <p class="text-[9px] text-slate-400 font-bold mb-0.5">見積合計</p>
+          <p class="text-sm font-bold" id="total-estimate">0h 00m</p>
+        </div>
+        <div class="flex-1 min-w-[120px] bg-slate-50 p-2 rounded-lg border text-center">
+          <p class="text-[9px] text-slate-400 font-bold mb-0.5">実績合計</p>
+          <p class="text-sm font-bold" id="total-actual">0h 00m</p>
+        </div>
+        <div class="flex-1 min-w-[120px] bg-slate-50 p-2 rounded-lg border text-center">
+          <p class="text-[9px] text-slate-400 font-bold mb-0.5">未設定タスク</p>
+          <p class="text-sm font-bold" id="undated-count">0</p>
+        </div>
+        <div class="flex-1 min-w-[120px] bg-slate-50 p-2 rounded-lg border text-center">
+          <p class="text-[9px] text-slate-400 font-bold mb-0.5">割り込み件数</p>
+          <p class="text-sm font-bold text-rose-600" id="interrupt-count">0</p>
+        </div>
+      </div>
+
+      <div class="flex-1 overflow-y-auto custom-scroll p-4 md:px-12 py-8 max-w-5xl mx-auto w-full">
+        <div class="sm:hidden flex bg-slate-100 p-1 rounded-lg mb-5">
+          <button onclick="setDateRange('today')" id="btn-today-m" class="view-btn w-1/3 px-2 py-1.5 text-xs font-bold rounded-md transition active">今日</button>
+          <button onclick="setDateRange('week')" id="btn-week-m" class="view-btn w-1/3 px-2 py-1.5 text-xs font-bold rounded-md transition text-slate-500">今週</button>
+          <button onclick="setDateRange('undated')" id="btn-undated-m" class="view-btn w-1/3 px-2 py-1.5 text-xs font-bold rounded-md transition text-slate-500">未設定</button>
+        </div>
+
+        <button onclick="openTaskModal(null, true)" class="w-full mb-8 py-4 bg-white border-2 border-dashed border-rose-200 text-rose-500 rounded-2xl text-xs font-black tracking-widest hover:bg-rose-50 transition flex items-center justify-center gap-2 shadow-sm">
+          <i class="fas fa-bolt"></i> 割り込みタスクを追加
+        </button>
+
+        <div id="task-container"></div>
+      </div>
+
+      <button onclick="openTaskModal()" class="fab w-16 h-16 bg-blue-600 text-white rounded-full shadow-2xl flex items-center justify-center text-2xl hover:bg-blue-700 transition transform hover:scale-105 active:scale-95" aria-label="add task">
+        <i class="fas fa-plus"></i>
+      </button>
+    </main>
+  </div>
+
+  <!-- Task Modal -->
+  <div id="task-modal" class="fixed inset-0 modal-bg z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-white rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+      <div class="p-6 border-b flex justify-between items-center bg-slate-50">
+        <h3 class="text-xl font-bold text-slate-800" id="modal-title">タスク詳細</h3>
+        <button onclick="closeModal('task-modal')" class="text-slate-400 p-2 hover:bg-slate-200 rounded-full" aria-label="close"><i class="fas fa-times"></i></button>
+      </div>
+
+      <div class="p-6 md:p-8 space-y-5 overflow-y-auto custom-scroll">
+        <input type="hidden" id="task-id" />
+        <input type="hidden" id="task-is-interrupt" />
+
+        <div class="space-y-2">
+          <label class="block text-[11px] font-black text-slate-400 uppercase tracking-widest">タスク名</label>
+          <input type="text" id="task-name" class="w-full border-2 border-slate-100 rounded-2xl p-4 outline-none focus:border-blue-500 bg-slate-50 font-bold" placeholder="何をしますか？" />
+        </div>
+
+        <div class="grid grid-cols-2 gap-4 md:gap-6">
+          <div class="space-y-2">
+            <label class="block text-[11px] font-black text-slate-400 uppercase tracking-widest">時間枠 (セクション)</label>
+            <select id="task-section" class="w-full border-2 border-slate-100 rounded-2xl p-4 bg-slate-50 text-sm outline-none focus:border-blue-500"></select>
+          </div>
+          <div class="space-y-2">
+            <label class="block text-[11px] font-black text-slate-400 uppercase tracking-widest">プロジェクト</label>
+            <select id="task-project" class="w-full border-2 border-slate-100 rounded-2xl p-4 bg-slate-50 text-sm outline-none focus:border-blue-500"></select>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-4 md:gap-6">
+          <div class="space-y-2">
+            <label class="block text-[11px] font-black text-slate-400 uppercase tracking-widest">見積 (分)</label>
+            <input type="number" id="task-duration" min="0" class="w-full border-2 border-slate-100 rounded-2xl p-4 bg-slate-50 text-sm outline-none" placeholder="例: 25" />
+          </div>
+          <div class="space-y-2">
+            <label class="block text-[11px] font-black text-slate-400 uppercase tracking-widest">実行予定日</label>
+            <input type="date" id="task-deadline" class="w-full border-2 border-slate-100 rounded-2xl p-4 bg-slate-50 text-sm outline-none" />
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-4 md:gap-6">
+          <div class="space-y-2">
+            <label class="block text-[11px] font-black text-slate-400 uppercase tracking-widest">リピート</label>
+            <select id="task-repeat" class="w-full border-2 border-slate-100 rounded-2xl p-4 bg-slate-50 text-sm outline-none focus:border-blue-500">
+              <option value="none">なし</option>
+              <option value="daily">毎日</option>
+              <option value="weekday">平日</option>
+              <option value="weekly">毎週</option>
+              <option value="monthly">毎月</option>
+            </select>
+          </div>
+          <div class="space-y-2">
+            <label class="block text-[11px] font-black text-slate-400 uppercase tracking-widest">ステータス</label>
+            <select id="task-status" class="w-full border-2 border-slate-100 rounded-2xl p-4 bg-slate-50 text-sm outline-none focus:border-blue-500">
+              <option value="pending">未着手</option>
+              <option value="running">実行中</option>
+              <option value="paused">中断</option>
+              <option value="completed">完了</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-4 md:gap-6">
+          <div class="space-y-2">
+            <label class="block text-[11px] font-black text-slate-400 uppercase tracking-widest">実績 (分)</label>
+            <input type="number" id="task-actual" min="0" class="w-full border-2 border-slate-100 rounded-2xl p-4 bg-slate-50 text-sm outline-none" placeholder="例: 30" />
+          </div>
+          <div class="space-y-2">
+            <label class="block text-[11px] font-black text-slate-400 uppercase tracking-widest">優先度</label>
+            <select id="task-priority" class="w-full border-2 border-slate-100 rounded-2xl p-4 bg-slate-50 text-sm outline-none focus:border-blue-500">
+              <option value="3">通常</option>
+              <option value="2">やや高</option>
+              <option value="1">高</option>
+              <option value="4">低</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="space-y-2">
+          <label class="block text-[11px] font-black text-slate-400 uppercase tracking-widest">備考（必須）</label>
+          <textarea id="task-notes" rows="4" class="w-full border-2 border-slate-100 rounded-2xl p-4 outline-none focus:border-blue-500 bg-slate-50 text-sm" placeholder="作業条件、判断メモ、気づき…（空は保存できません）"></textarea>
+          <p class="text-[11px] text-slate-500">※「備考必須」ルールで、空欄のまま保存できません。</p>
+        </div>
+
+        <div class="flex gap-3 pt-2">
+          <button onclick="saveTaskFromModal()" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-2xl">保存</button>
+          <button onclick="closeModal('task-modal')" class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-3 rounded-2xl">キャンセル</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Project Modal -->
+  <div id="project-modal" class="fixed inset-0 modal-bg z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-white rounded-3xl w-full max-w-md shadow-2xl overflow-hidden">
+      <div class="p-6 border-b flex justify-between items-center bg-slate-50">
+        <h3 class="text-lg font-bold text-slate-800">プロジェクト</h3>
+        <button onclick="closeModal('project-modal')" class="text-slate-400 p-2 hover:bg-slate-200 rounded-full" aria-label="close"><i class="fas fa-times"></i></button>
+      </div>
+      <div class="p-6 space-y-4">
+        <input type="hidden" id="project-id" />
+        <div class="space-y-2">
+          <label class="block text-[11px] font-black text-slate-400 uppercase tracking-widest">名称</label>
+          <input type="text" id="project-name" class="w-full border-2 border-slate-100 rounded-2xl p-4 outline-none focus:border-blue-500 bg-slate-50 font-bold" placeholder="例: 情シス改善" />
+        </div>
+        <div class="flex gap-3">
+          <button onclick="saveProjectFromModal()" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-2xl">保存</button>
+          <button onclick="closeModal('project-modal')" class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-3 rounded-2xl">閉じる</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Search Modal -->
+  <div id="search-modal" class="fixed inset-0 modal-bg z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-white rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden">
+      <div class="p-6 border-b flex justify-between items-center bg-slate-50">
+        <h3 class="text-lg font-bold text-slate-800">検索</h3>
+        <button onclick="closeModal('search-modal')" class="text-slate-400 p-2 hover:bg-slate-200 rounded-full" aria-label="close"><i class="fas fa-times"></i></button>
+      </div>
+      <div class="p-6 space-y-3">
+        <input id="search-q" oninput="renderAll()" type="text" class="w-full border-2 border-slate-100 rounded-2xl p-4 outline-none focus:border-blue-500 bg-slate-50" placeholder="タスク名 / 備考 / プロジェクト…" />
+        <p class="text-[11px] text-slate-500">ESCで閉じます</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Auth Modal -->
+  <div id="auth-modal" class="fixed inset-0 modal-bg z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-white rounded-3xl w-full max-w-md shadow-2xl overflow-hidden">
+      <div class="p-6 border-b flex justify-between items-center bg-slate-50">
+        <h3 class="text-lg font-bold text-slate-800">ログイン</h3>
+        <button onclick="closeModal('auth-modal')" class="text-slate-400 p-2 hover:bg-slate-200 rounded-full" aria-label="close"><i class="fas fa-times"></i></button>
+      </div>
+      <div class="p-6 space-y-4">
+        <div class="text-[12px] text-slate-600 leading-relaxed">
+          PC/スマホで同期するため、Supabaseでログインします。<br />
+          既存データが端末内にある場合は、ログイン後に「クラウドへ移行」できます。
+        </div>
+
+        <div class="space-y-2">
+          <label class="block text-[11px] font-black text-slate-400 uppercase tracking-widest">Email</label>
+          <input id="auth-email" type="email" class="w-full border-2 border-slate-100 rounded-2xl p-4 outline-none focus:border-blue-500 bg-slate-50" placeholder="you@example.com" />
+        </div>
+
+        <div class="space-y-2">
+          <label class="block text-[11px] font-black text-slate-400 uppercase tracking-widest">Password</label>
+          <input id="auth-pass" type="password" class="w-full border-2 border-slate-100 rounded-2xl p-4 outline-none focus:border-blue-500 bg-slate-50" placeholder="password" />
+          <p class="text-[11px] text-slate-500">初回は「新規登録」で作れます</p>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+          <button onclick="authSignIn()" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-2xl">ログイン</button>
+          <button onclick="authSignUp()" class="bg-slate-900 hover:bg-slate-800 text-white font-bold py-3 rounded-2xl">新規登録</button>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+          <button onclick="migrateLocalToCloud()" class="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-3 rounded-2xl">クラウドへ移行</button>
+          <button onclick="authSignOut()" class="bg-red-50 hover:bg-red-100 text-red-700 font-bold py-3 rounded-2xl">ログアウト</button>
+        </div>
+
+        <div class="text-[11px] text-slate-500">
+          現在の保存: <b id="auth-storage">---</b>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"><div class="bg-slate-900 text-white text-sm px-4 py-2 rounded-xl shadow-xl"></div></div>
+
+<script>
+  /*********************
+   * 0) Supabase config（ここを置換）
+   *********************/
+  const SUPABASE_URL = 'https://opjgyixsmdbnmkwbxruy.supabase.co';
+  const SUPABASE_ANON_KEY = 'sb_publishable_hQMgGP5NXKYOZUYf8938Jw_5MzJMhWA';
+
+  const supabase = (SUPABASE_URL.startsWith('http') && !SUPABASE_URL.includes('REPLACE_'))
+    ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+    : null;
+
+  /*********************
+   * 1) Storage adapters
+   *********************/
+  const STORAGE_KEY = 'taskchute_pro_v1_local';
+
+  class LocalStorageAdapter {
+    async load() {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return null;
+      try { return JSON.parse(raw); } catch { return null; }
+    }
+    async save(data) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    }
+    async clear() {
+      localStorage.removeItem(STORAGE_KEY);
+    }
+  }
+
+  // ✅ これが「そのまま差し込める SupabaseAdapter」
+  class SupabaseAdapter {
+    constructor(client){ this.client = client; }
+
+    async load(){
+      if (!this.client) return null;
+      const { data: sessionData } = await this.client.auth.getSession();
+      const user = sessionData?.session?.user;
+      if (!user) return null;
+
+      const { data, error } = await this.client
+        .from('user_data')
+        .select('data')
+        .eq('user_id', user.id)
+        .maybeSingle();
+
+      if (error) throw error;
+      return data?.data ?? null;
+    }
+
+    async save(stateData){
+      if (!this.client) return;
+      const { data: sessionData } = await this.client.auth.getSession();
+      const user = sessionData?.session?.user;
+      if (!user) throw new Error('not authenticated');
+
+      const { error } = await this.client
+        .from('user_data')
+        .upsert({ user_id: user.id, data: stateData, updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
+
+      if (error) throw error;
+    }
+
+    async clear(){
+      if (!this.client) return;
+      const { data: sessionData } = await this.client.auth.getSession();
+      const user = sessionData?.session?.user;
+      if (!user) return;
+
+      const { error } = await this.client
+        .from('user_data')
+        .delete()
+        .eq('user_id', user.id);
+
+      if (error) throw error;
+    }
+  }
+
+  // ログイン済みならSupabase、未ログインならLocal
+  class HybridAdapter {
+    constructor(local, cloud, client){
+      this.local = local;
+      this.cloud = cloud;
+      this.client = client;
+    }
+
+    async isAuthed(){
+      if (!this.client) return false;
+      const { data } = await this.client.auth.getSession();
+      return !!data?.session?.user;
+    }
+
+    async load(){
+      if (await this.isAuthed()) {
+        setStorageModeUI('Supabase');
+        return await this.cloud.load();
+      }
+      setStorageModeUI('LocalStorage');
+      return await this.local.load();
+    }
+
+    async save(data){
+      if (await this.isAuthed()) {
+        setStorageModeUI('Supabase');
+        return await this.cloud.save(data);
+      }
+      setStorageModeUI('LocalStorage');
+      return await this.local.save(data);
+    }
+
+    async clear(){
+      if (await this.isAuthed()) {
+        setStorageModeUI('Supabase');
+        return await this.cloud.clear();
+      }
+      setStorageModeUI('LocalStorage');
+      return await this.local.clear();
+    }
+  }
+
+  const localAdapter = new LocalStorageAdapter();
+  const cloudAdapter = new SupabaseAdapter(supabase);
+  const storage = new HybridAdapter(localAdapter, cloudAdapter, supabase);
+
+  /*********************
+   * 2) Utils
+   *********************/
+  const nowISODate = () => new Date().toISOString().slice(0,10);
+  const uid = () => crypto.randomUUID ? crypto.randomUUID() : (Date.now().toString(36)+Math.random().toString(36).slice(2));
+
+  const DEFAULT_SECTIONS = [
+    { id: 'morning', name: '朝' },
+    { id: 'forenoon', name: '午前' },
+    { id: 'afternoon', name: '午後' },
+    { id: 'evening', name: '夜' },
+  ];
+
+  const state = {
+    data: {
+      meta: { version: 1, updatedAt: new Date().toISOString() },
+      projects: [ { id: 'inbox', name: 'INBOX' } ],
+      sections: DEFAULT_SECTIONS,
+      tasks: [],
+      ui: { dateRange: 'today', projectFilter: null }
+    }
+  };
+
+  function normalizeData(d){
+    const safe = d && typeof d === 'object' ? d : {};
+    const projects = Array.isArray(safe.projects) ? safe.projects : [ {id:'inbox', name:'INBOX'} ];
+    const sections = Array.isArray(safe.sections) ? safe.sections : DEFAULT_SECTIONS;
+    const tasks = Array.isArray(safe.tasks) ? safe.tasks : [];
+    const ui = safe.ui && typeof safe.ui === 'object' ? safe.ui : { dateRange:'today', projectFilter:null };
+    return { meta: { version: 1, updatedAt: new Date().toISOString() }, projects, sections, tasks, ui };
+  }
+
+  async function persist(){
+    state.data.meta.updatedAt = new Date().toISOString();
+    try {
+      await storage.save(state.data);
+    } catch (e) {
+      console.error(e);
+      toast('保存に失敗（ログイン状態を確認）');
+    }
+  }
+
+  function addDaysISO(iso, days){
+    const d = new Date(`${iso}T00:00:00`);
+    d.setDate(d.getDate() + days);
+    const y = d.getFullYear();
+    const mo = String(d.getMonth()+1).padStart(2,'0');
+    const da = String(d.getDate()).padStart(2,'0');
+    return `${y}-${mo}-${da}`;
+  }
+
+  function setStorageModeUI(mode){
+    const el = document.getElementById('storage-mode');
+    const el2 = document.getElementById('auth-storage');
+    if (el) el.textContent = mode;
+    if (el2) el2.textContent = mode;
+  }
+
+  /*********************
+   * 3) Time windows
+   *********************/
+  const SECTION_BOUNDARIES_MIN = {
+    morningStart: 5 * 60,
+    forenoonStart: 9 * 60 + 30,
+    afternoonStart: 13 * 60,
+    eveningStart: 18 * 60 + 30,
+  };
+
+  function classifyTimeToSectionId(dateObj){
+    const t = dateObj.getHours() * 60 + dateObj.getMinutes();
+    if (t >= SECTION_BOUNDARIES_MIN.eveningStart || t < SECTION_BOUNDARIES_MIN.morningStart) return 'evening';
+    if (t >= SECTION_BOUNDARIES_MIN.afternoonStart) return 'afternoon';
+    if (t >= SECTION_BOUNDARIES_MIN.forenoonStart) return 'forenoon';
+    return 'morning';
+  }
+
+  /*********************
+   * 4) UI base
+   *********************/
+  function toggleSidebar(){
+    const sidebar = document.getElementById('sidebar');
+    const overlay = document.getElementById('sidebar-overlay');
+    const opened = !sidebar.classList.contains('sidebar-hidden');
+    if (opened){
+      sidebar.classList.add('sidebar-hidden');
+      overlay.classList.add('hidden');
+      document.body.classList.remove('sidebar-open');
+    } else {
+      sidebar.classList.remove('sidebar-hidden');
+      overlay.classList.remove('hidden');
+      document.body.classList.add('sidebar-open');
+    }
+  }
+
+  function switchSidebarTab(tab){
+    const tabPlan = document.getElementById('tab-plan');
+    const tabSync = document.getElementById('tab-sync');
+    const viewPlan = document.getElementById('view-plan');
+    const viewSync = document.getElementById('view-sync');
+
+    if (tab === 'plan'){
+      tabPlan.classList.add('tab-active');
+      tabSync.classList.remove('tab-active');
+      viewPlan.classList.remove('hidden');
+      viewSync.classList.add('hidden');
+    } else {
+      tabSync.classList.add('tab-active');
+      tabPlan.classList.remove('tab-active');
+      viewSync.classList.remove('hidden');
+      viewPlan.classList.add('hidden');
+    }
+  }
+
+  function openModal(id){ document.getElementById(id).classList.remove('hidden'); }
+  function closeModal(id){
+    document.getElementById(id).classList.add('hidden');
+    if (id === 'search-modal') document.getElementById('search-q').value = '';
+  }
+
+  function toast(msg){
+    const root = document.getElementById('toast');
+    const box = root.querySelector('div');
+    box.textContent = msg;
+    root.classList.remove('hidden');
+    setTimeout(() => root.classList.add('hidden'), 1800);
+  }
+
+  function openQuickSearch(){
+    openModal('search-modal');
+    setTimeout(()=>document.getElementById('search-q').focus(), 50);
+  }
+
+  document.addEventListener('keydown', (e)=>{
+    if (e.key === 'Escape'){
+      ['task-modal','project-modal','search-modal','auth-modal'].forEach(id=>{
+        const el = document.getElementById(id);
+        if (!el.classList.contains('hidden')) closeModal(id);
+      });
+    }
+  });
+
+  function openAuthModal(){
+    if (!supabase){
+      toast('Supabase設定が未入力です');
+      return;
+    }
+    openModal('auth-modal');
+  }
+
+  function hydrateSelectors(){
+    const sectionSel = document.getElementById('task-section');
+    sectionSel.innerHTML = '';
+    state.data.sections.forEach(s=>{
+      const opt = document.createElement('option');
+      opt.value = s.id;
+      opt.textContent = s.name;
+      sectionSel.appendChild(opt);
+    });
+
+    const projSel = document.getElementById('task-project');
+    projSel.innerHTML = '';
+    state.data.projects.forEach(p=>{
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = p.name;
+      projSel.appendChild(opt);
+    });
+  }
+
+  /*********************
+   * 5) Auth actions
+   *********************/
+  async function refreshAuthChip(){
+    const chip = document.getElementById('auth-chip');
+    const label = document.getElementById('auth-label');
+    if (!chip || !label) return;
+
+    chip.classList.remove('hidden');
+
+    if (!supabase){
+      label.textContent = '未設定';
+      return;
+    }
+
+    const { data } = await supabase.auth.getSession();
+    const user = data?.session?.user;
+    if (user){
+      label.textContent = user.email || 'ログイン中';
+      setStorageModeUI('Supabase');
+    } else {
+      label.textContent = '未ログイン';
+      setStorageModeUI('LocalStorage');
+    }
+  }
+
+  async function authSignIn(){
+    if (!supabase) return;
+    const email = document.getElementById('auth-email').value.trim();
+    const pass = document.getElementById('auth-pass').value;
+    if (!email || !pass){ toast('Email/Passwordを入力してください'); return; }
+
+    const { error } = await supabase.auth.signInWithPassword({ email, password: pass });
+    if (error){ toast('ログイン失敗: ' + error.message); return; }
+
+    toast('ログインしました');
+    await refreshAuthChip();
+    await loadFromCloudThenRender();
+    closeModal('auth-modal');
+  }
+
+  async function authSignUp(){
+    if (!supabase) return;
+    const email = document.getElementById('auth-email').value.trim();
+    const pass = document.getElementById('auth-pass').value;
+    if (!email || !pass){ toast('Email/Passwordを入力してください'); return; }
+
+    const { error } = await supabase.auth.signUp({ email, password: pass });
+    if (error){ toast('登録失敗: ' + error.message); return; }
+
+    toast('登録しました（そのままログイン済みのはずです）');
+    await refreshAuthChip();
+    await loadFromCloudThenRender();
+    closeModal('auth-modal');
+  }
+
+  async function authSignOut(){
+    if (!supabase) return;
+    await supabase.auth.signOut();
+    toast('ログアウトしました');
+    await refreshAuthChip();
+    // ローカルに残っているデータを表示
+    const local = await localAdapter.load();
+    if (local) state.data = normalizeData(local);
+    renderProjects();
+    setDateRange(state.data.ui.dateRange || 'today', true);
+    renderAll();
+  }
+
+  async function migrateLocalToCloud(){
+    if (!supabase) return;
+    const { data } = await supabase.auth.getSession();
+    const user = data?.session?.user;
+    if (!user){ toast('先にログインしてください'); return; }
+
+    const local = await localAdapter.load();
+    if (!local){ toast('移行するローカルデータがありません'); return; }
+
+    state.data = normalizeData(local);
+    await persist();
+    toast('ローカル → クラウドへ移行しました');
+    closeModal('auth-modal');
+    renderProjects();
+    renderAll();
+  }
+
+  async function loadFromCloudThenRender(){
+    try {
+      const loaded = await cloudAdapter.load();
+      if (loaded) state.data = normalizeData(loaded);
+      renderProjects();
+      setDateRange(state.data.ui.dateRange || 'today', true);
+      renderAll();
+    } catch (e) {
+      console.error(e);
+      toast('クラウド読み込みに失敗しました');
+    }
+  }
+
+  /*********************
+   * 6) Filtering
+   *********************/
+  function setDateRange(range, skipPersist=false){
+    state.data.ui.dateRange = range;
+
+    const ids = ['today','week','undated'];
+    ids.forEach(k=>{
+      const btn = document.getElementById('btn-'+k);
+      const btnm = document.getElementById('btn-'+k+'-m');
+      if (btn){ btn.classList.toggle('active', k===range); btn.classList.toggle('text-slate-500', k!==range); }
+      if (btnm){ btnm.classList.toggle('active', k===range); btnm.classList.toggle('text-slate-500', k!==range); }
+    });
+
+    if (!skipPersist) persist();
+    renderAll();
+  }
+
+  function setProjectFilter(projectId){
+    state.data.ui.projectFilter = projectId;
+    persist();
+    renderProjects();
+    renderAll();
+  }
+
+  function inWeek(dateStr){
+    if (!dateStr) return false;
+    const d = new Date(dateStr + 'T00:00:00');
+    const now = new Date();
+    const day = now.getDay();
+    const diffToMon = (day === 0 ? -6 : 1 - day);
+    const monday = new Date(now); monday.setHours(0,0,0,0); monday.setDate(now.getDate() + diffToMon);
+    const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6); sunday.setHours(23,59,59,999);
+    return d >= monday && d <= sunday;
+  }
+
+  function matchesDateRange(task){
+    const r = state.data.ui.dateRange;
+    if (r === 'undated') return !task.date;
+    if (r === 'today') return task.date === nowISODate();
+    if (r === 'week') return inWeek(task.date);
+    return true;
+  }
+
+  function isVisibleByFilters(task){
+    const showCompleted = document.getElementById('filter-completed').checked;
+    const uncompletedOnly = document.getElementById('filter-uncompleted-only').checked;
+
+    if (!showCompleted && task.status === 'completed') return false;
+    if (uncompletedOnly && task.status === 'completed') return false;
+
+    const pf = state.data.ui.projectFilter;
+    if (pf && task.projectId !== pf) return false;
+
+    const q = (document.getElementById('search-q')?.value || '').trim().toLowerCase();
+    if (q){
+      const pj = getProject(task.projectId)?.name || '';
+      const s = `${task.name} ${task.notes} ${pj}`.toLowerCase();
+      if (!s.includes(q)) return false;
+    }
+
+    return matchesDateRange(task);
+  }
+
+  /*********************
+   * 7) Render helpers
+   *********************/
+  function getProject(id){ return state.data.projects.find(p=>p.id===id); }
+  function getSection(id){ return state.data.sections.find(s=>s.id===id); }
+
+  function statusClass(task){
+    if (task.status === 'completed') return 'status-completed';
+    if (task.status === 'running') return 'status-running';
+    if (task.status === 'paused') return 'status-paused';
+    if (task.date && task.date > nowISODate()) return 'status-future';
+    return 'status-pending';
+  }
+
+  function priorityBadge(p){
+    const map = {
+      1:['高','bg-rose-100 text-rose-700'],
+      2:['やや高','bg-amber-100 text-amber-700'],
+      3:['通常','bg-slate-100 text-slate-700'],
+      4:['低','bg-slate-100 text-slate-500']
+    };
+    const [label, cls] = map[p] || map[3];
+    return `<span class="text-[10px] font-bold px-2 py-0.5 rounded-full ${cls}">${label}</span>`;
+  }
+
+  function fmtMin(min){
+    const m = Number(min)||0;
+    const h = Math.floor(m/60);
+    const mm = m%60;
+    return `${h}h ${String(mm).padStart(2,'0')}m`;
+  }
+
+  function escapeHtml(str){
+    return String(str ?? '')
+      .replaceAll('&','&amp;')
+      .replaceAll('<','&lt;')
+      .replaceAll('>','&gt;')
+      .replaceAll('"','&quot;')
+      .replaceAll("'",'&#39;');
+  }
+
+  function prettyDate(iso){
+    try {
+      const d = new Date(iso + 'T00:00:00');
+      const w = ['日','月','火','水','木','金','土'][d.getDay()];
+      return `${d.getFullYear()}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')} (${w})`;
+    } catch {
+      return iso;
+    }
+  }
+
+  function elapsedMinSince(iso){
+    if (!iso) return 0;
+    const start = new Date(iso).getTime();
+    if (!Number.isFinite(start)) return 0;
+    const diffMs = Date.now() - start;
+    return Math.max(0, Math.floor(diffMs / 60000));
+  }
+
+  /*********************
+   * 8) Running controls
+   *********************/
+  function stopTask(taskId, opts={}){
+    const t = state.data.tasks.find(x=>x.id===taskId);
+    if (!t) return;
+
+    if (t.status === 'running' && t.startedAt){
+      const add = elapsedMinSince(t.startedAt);
+      if (add > 0) t.actualMin = Math.max(0, Number(t.actualMin||0) + add);
+    }
+
+    t.startedAt = null;
+    if (opts.setPaused) t.status = 'paused';
+    else if (t.status === 'running') t.status = 'pending';
+
+    t.updatedAt = new Date().toISOString();
+  }
+
+  async function startTask(taskId){
+    const t = state.data.tasks.find(x=>x.id===taskId);
+    if (!t) return;
+
+    const running = state.data.tasks.find(x=>x.status==='running' && x.id!==taskId);
+    if (running){
+      stopTask(running.id, { setPaused: false });
+    }
+
+    t.status = 'running';
+    t.startedAt = new Date().toISOString();
+    t.updatedAt = new Date().toISOString();
+
+    await persist();
+    renderAll();
+  }
+
+  async function pauseTask(taskId){
+    stopTask(taskId, { setPaused: true });
+    await persist();
+    renderAll();
+  }
+
+  async function postponeTask(taskId, days=1){
+    const t = state.data.tasks.find(x=>x.id===taskId);
+    if (!t) return;
+
+    if (t.status === 'running') stopTask(t.id, { setPaused: false });
+
+    const base = t.date ? t.date : nowISODate();
+    t.date = addDaysISO(base, days);
+    t.updatedAt = new Date().toISOString();
+
+    await persist();
+    toast('先送りしました（+1日）');
+    renderAll();
+  }
+
+  function enforceEveningRule(now=new Date()){
+    const current = classifyTimeToSectionId(now);
+    if (current !== 'evening') return;
+
+    const runningTask = state.data.tasks.find(t=>t.status==='running');
+    if (!runningTask) return;
+
+    stopTask(runningTask.id, { setPaused: false });
+
+    const base = runningTask.date ? runningTask.date : nowISODate();
+    runningTask.date = addDaysISO(base, 1);
+    runningTask.sectionId = 'forenoon';
+
+    runningTask.updatedAt = new Date().toISOString();
+    persist();
+    toast('夜になったので停止 → 翌日午前に先送りしました');
+  }
+
+  async function loopTask(taskId){
+    const t = state.data.tasks.find(x=>x.id===taskId);
+    if (!t) return;
+
+    if (t.status === 'running'){
+      stopTask(t.id, { setPaused: false });
+    }
+    t.status = 'completed';
+    t.startedAt = null;
+    t.updatedAt = new Date().toISOString();
+
+    const baseDate = t.date ? t.date : nowISODate();
+    const nextDate = addDaysISO(baseDate, 1);
+
+    const newTask = {
+      ...JSON.parse(JSON.stringify(t)),
+      id: uid(),
+      date: nextDate,
+      sectionId: 'forenoon',
+      actualMin: 0,
+      status: 'running',
+      startedAt: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    state.data.tasks.push(newTask);
+
+    await persist();
+    toast('ループ: 次回タスク（午前）を作成して開始しました');
+    renderAll();
+  }
+
+  /*********************
+   * 9) Totals + Projects + Render
+   *********************/
+  function recomputeTotals(){
+    const visible = state.data.tasks.filter(isVisibleByFilters);
+    const est = visible.reduce((a,t)=>a + (Number(t.estimateMin)||0), 0);
+    const act = visible.reduce((a,t)=>a + (Number(t.actualMin)||0), 0);
+    document.getElementById('total-estimate').textContent = fmtMin(est);
+    document.getElementById('total-actual').textContent = fmtMin(act);
+
+    const undatedCount = state.data.tasks.filter(t=>!t.date && t.status!=='completed').length;
+    document.getElementById('undated-count').textContent = String(undatedCount);
+
+    const interruptCount = visible.filter(t=>!!t.isInterrupt).length;
+    document.getElementById('interrupt-count').textContent = String(interruptCount);
+
+    const now = new Date();
+    const finish = new Date(now.getTime() + est*60000);
+    const hh = String(finish.getHours()).padStart(2,'0');
+    const mm = String(finish.getMinutes()).padStart(2,'0');
+    document.getElementById('finish-estimate').textContent = `${hh}:${mm}`;
+  }
+
+  function renderProjects(){
+    const list = document.getElementById('project-list');
+    const pf = state.data.ui.projectFilter;
+    list.innerHTML = '';
+
+    state.data.projects
+      .slice()
+      .sort((a,b)=> a.name.localeCompare(b.name,'ja'))
+      .forEach(p=>{
+        const count = state.data.tasks.filter(t=>t.projectId===p.id && t.status!=='completed').length;
+        const active = pf === p.id;
+        const btn = document.createElement('button');
+        btn.className = `w-full flex justify-between items-center px-3 py-2 rounded-xl text-xs font-bold border transition ${active ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white border-slate-100 text-slate-700 hover:bg-slate-50'}`;
+        btn.innerHTML = `<span class="truncate">${escapeHtml(p.name)}</span><span class="text-[10px] ${active ? 'text-blue-700' : 'text-slate-400'}">${count}</span>`;
+        btn.onclick = ()=> setProjectFilter(p.id);
+        list.appendChild(btn);
+      });
+
+    hydrateSelectors();
+  }
+
+  function renderAll(){
+    enforceEveningRule(new Date());
+
+    const container = document.getElementById('task-container');
+
+    const tasks = state.data.tasks
+      .slice()
+      .sort((a,b)=>{
+        if (state.data.ui.dateRange === 'undated') return (a.createdAt||'').localeCompare(b.createdAt||'');
+        const ad = a.date || '9999-12-31';
+        const bd = b.date || '9999-12-31';
+        if (ad !== bd) return ad.localeCompare(bd);
+        const sIdx = (id)=> state.data.sections.findIndex(s=>s.id===id);
+        const ai = sIdx(a.sectionId); const bi = sIdx(b.sectionId);
+        if (ai !== bi) return ai - bi;
+        return (Number(a.priority)||3) - (Number(b.priority)||3);
+      })
+      .filter(isVisibleByFilters);
+
+    if (!tasks.length){
+      container.innerHTML = `
+        <div class="bg-white border rounded-3xl p-8 text-center">
+          <div class="text-3xl mb-2">🗂️</div>
+          <p class="font-bold text-slate-800">表示するタスクがありません</p>
+          <p class="text-sm text-slate-500 mt-1">右下の＋から追加できます</p>
+        </div>
+      `;
+      recomputeTotals();
+      return;
+    }
+
+    const dateGroups = new Map();
+    for (const t of tasks){
+      const dk = t.date || '未設定';
+      if (!dateGroups.has(dk)) dateGroups.set(dk, []);
+      dateGroups.get(dk).push(t);
+    }
+
+    container.innerHTML = '';
+
+    for (const [dateKey, dateItems] of dateGroups.entries()){
+      const dateSection = document.createElement('section');
+      dateSection.className = 'mb-10';
+
+      const dateHeader = document.createElement('div');
+      dateHeader.className = 'flex items-center justify-between mb-3';
+      const label = (dateKey==='未設定') ? '未設定' : prettyDate(dateKey);
+      dateHeader.innerHTML = `
+        <h2 class="text-[11px] font-black text-slate-400 uppercase tracking-widest">${escapeHtml(label)}</h2>
+        <div class="text-[11px] text-slate-400">${dateItems.length}件</div>
+      `;
+
+      const bySection = new Map();
+      for (const t of dateItems){
+        const sid = t.sectionId || 'unknown';
+        if (!bySection.has(sid)) bySection.set(sid, []);
+        bySection.get(sid).push(t);
+      }
+
+      const list = document.createElement('div');
+      list.className = 'space-y-6';
+
+      const sectionOrder = state.data.sections.map(s=>s.id);
+      const keys = Array.from(bySection.keys()).sort((a,b)=>{
+        const ai = sectionOrder.indexOf(a);
+        const bi = sectionOrder.indexOf(b);
+        if (ai === -1 && bi === -1) return String(a).localeCompare(String(b));
+        if (ai === -1) return 1;
+        if (bi === -1) return -1;
+        return ai - bi;
+      });
+
+      for (const sid of keys){
+        const sectionItems = bySection.get(sid);
+        const seName = (sid==='unknown') ? '（未分類）' : (getSection(sid)?.name || '（未分類）');
+        const secEst = sectionItems.reduce((a,t)=>a + (Number(t.estimateMin)||0), 0);
+        const secAct = sectionItems.reduce((a,t)=>a + (Number(t.actualMin)||0), 0);
+        const secInterrupt = sectionItems.filter(t=>!!t.isInterrupt).length;
+
+        const header = document.createElement('div');
+        header.className = 'flex items-center justify-between px-1';
+        header.innerHTML = `
+          <div class="flex items-center gap-2">
+            <span class="text-xs font-black text-slate-700">${escapeHtml(seName)}</span>
+            <span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">${sectionItems.length}件</span>
+            ${secInterrupt ? `<span class=\"text-[10px] font-black px-2 py-0.5 rounded-full bg-rose-100 text-rose-700\">割り込み ${secInterrupt}</span>` : ''}
+          </div>
+          <div class="text-[11px] text-slate-500">見積 ${fmtMin(secEst)} / 実績 ${fmtMin(secAct)}</div>
+        `;
+
+        const cards = document.createElement('div');
+        cards.className = 'space-y-3';
+
+        for (const t of sectionItems){
+          const pj = getProject(t.projectId)?.name || '—';
+          const elapsed = (t.status==='running') ? elapsedMinSince(t.startedAt) : 0;
+
+          const card = document.createElement('div');
+          card.className = `task-card bg-white border border-slate-100 rounded-3xl p-5 transition ${statusClass(t)}`;
+          card.innerHTML = `
+            <div class="flex items-start justify-between gap-3">
+              <div class="min-w-0">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <p class="font-bold text-slate-800 truncate">${escapeHtml(t.name || '(無題)')}</p>
+                  ${t.isInterrupt ? '<span class="text-[10px] font-black px-2 py-0.5 rounded-full bg-rose-100 text-rose-700">割り込み</span>' : ''}
+                  ${priorityBadge(t.priority)}
+                  ${t.status==='running' ? `<span class=\"text-[10px] font-black px-2 py-0.5 rounded-full bg-blue-100 text-blue-700\">経過 ${elapsed}m</span>` : ''}
+                </div>
+                <div class="mt-1 text-xs text-slate-500 flex flex-wrap gap-x-3 gap-y-1">
+                  <span><i class="fa-regular fa-folder-open"></i> ${escapeHtml(pj)}</span>
+                  <span><i class="fa-regular fa-hourglass"></i> 見積 ${fmtMin(t.estimateMin)}</span>
+                  <span><i class="fa-regular fa-circle-check"></i> 実績 ${fmtMin(t.actualMin)}</span>
+                </div>
+              </div>
+
+              <div class="task-actions flex items-center gap-2">
+                ${t.status === 'running'
+                  ? `<button onclick=\"pauseTask('${t.id}')\" class=\"p-2 rounded-xl border hover:bg-slate-50\" title=\"停止\" aria-label=\"pause\"><i class=\"fas fa-pause text-amber-600\"></i></button>`
+                  : `<button onclick=\"startTask('${t.id}')\" class=\"p-2 rounded-xl border hover:bg-slate-50\" title=\"再生\" aria-label=\"start\"><i class=\"fas fa-play text-blue-600\"></i></button>`
+                }
+
+                <button onclick="postponeTask('${t.id}', 1)" class="p-2 rounded-xl border hover:bg-slate-50" title="先送り（+1日）" aria-label="postpone">
+                  <i class="fas fa-forward text-slate-600"></i>
+                </button>
+
+                <button onclick="loopTask('${t.id}')" class="p-2 rounded-xl border hover:bg-slate-50" title="ループ（次回を午前で作って開始）" aria-label="loop">
+                  <i class="fas fa-rotate-right text-purple-600"></i>
+                </button>
+
+                <button onclick="toggleComplete('${t.id}')" class="p-2 rounded-xl border hover:bg-slate-50" title="完了切替" aria-label="toggle complete">
+                  <i class="fas ${t.status==='completed' ? 'fa-rotate-left text-slate-500' : 'fa-check text-emerald-600'}"></i>
+                </button>
+                <button onclick="openTaskModal('${t.id}')" class="p-2 rounded-xl border hover:bg-slate-50" title="編集" aria-label="edit">
+                  <i class="fas fa-pen text-slate-600"></i>
+                </button>
+                <button onclick="deleteTask('${t.id}')" class="p-2 rounded-xl border hover:bg-slate-50" title="削除" aria-label="delete">
+                  <i class="fas fa-trash text-rose-600"></i>
+                </button>
+              </div>
+            </div>
+
+            <div class="mt-4 bg-slate-50 border border-slate-100 rounded-2xl p-3">
+              <p class="text-xs text-slate-700 whitespace-pre-wrap">${escapeHtml(t.notes || '')}</p>
+            </div>
+          `;
+          cards.appendChild(card);
+        }
+
+        const block = document.createElement('div');
+        block.className = 'space-y-3';
+        block.appendChild(header);
+        block.appendChild(cards);
+        list.appendChild(block);
+      }
+
+      dateSection.appendChild(dateHeader);
+      dateSection.appendChild(list);
+      container.appendChild(dateSection);
+    }
+
+    recomputeTotals();
+  }
+
+  /*********************
+   * 10) CRUD
+   *********************/
+  function openTaskModal(taskId=null, isInterrupt=false){
+    const t = taskId ? state.data.tasks.find(x=>x.id===taskId) : null;
+
+    document.getElementById('modal-title').textContent = taskId ? 'タスク編集' : 'タスク追加';
+    document.getElementById('task-id').value = t?.id || '';
+    document.getElementById('task-is-interrupt').value = (t?.isInterrupt ?? isInterrupt) ? '1' : '';
+
+    const defaultSection = 'afternoon';
+    const defaultDate = nowISODate();
+
+    document.getElementById('task-name').value = t?.name || '';
+    document.getElementById('task-section').value = t?.sectionId || defaultSection;
+    document.getElementById('task-project').value = t?.projectId || 'inbox';
+
+    document.getElementById('task-duration').value = (t?.estimateMin ?? 0);
+    document.getElementById('task-deadline').value = (t ? (t.date || '') : defaultDate);
+    document.getElementById('task-repeat').value = t?.repeat || 'none';
+    document.getElementById('task-status').value = t?.status || 'pending';
+    document.getElementById('task-actual').value = (t?.actualMin ?? 0);
+    document.getElementById('task-priority').value = String(t?.priority ?? 3);
+
+    document.getElementById('task-notes').value = t?.notes || '';
+
+    openModal('task-modal');
+    setTimeout(()=>document.getElementById('task-name').focus(), 50);
+  }
+
+  async function saveTaskFromModal(){
+    const id = document.getElementById('task-id').value || uid();
+    const isInterrupt = !!document.getElementById('task-is-interrupt').value;
+
+    const name = document.getElementById('task-name').value.trim();
+    const sectionId = document.getElementById('task-section').value;
+    const projectId = document.getElementById('task-project').value;
+    const estimateMin = Number(document.getElementById('task-duration').value || 0);
+    const date = document.getElementById('task-deadline').value || '';
+    const repeat = document.getElementById('task-repeat').value;
+    const status = document.getElementById('task-status').value;
+    const actualMin = Number(document.getElementById('task-actual').value || 0);
+    const priority = Number(document.getElementById('task-priority').value || 3);
+    const notes = document.getElementById('task-notes').value.trim();
+
+    if (!name){ toast('タスク名が必要です'); return; }
+    if (!notes){ toast('備考は必須です'); return; }
+
+    const exists = state.data.tasks.findIndex(t=>t.id===id);
+
+    const base = {
+      id,
+      name,
+      sectionId,
+      projectId,
+      estimateMin: Math.max(0, estimateMin),
+      actualMin: Math.max(0, actualMin),
+      date: date || '',
+      repeat,
+      status,
+      priority,
+      isInterrupt,
+      notes,
+      startedAt: (status === 'running') ? (new Date().toISOString()) : null,
+      updatedAt: new Date().toISOString(),
+    };
+
+    if (exists >= 0){
+      const prev = state.data.tasks[exists];
+      if (prev.status === 'running' && base.status === 'running') base.startedAt = prev.startedAt;
+      state.data.tasks[exists] = { ...prev, ...base };
+      toast('保存しました');
+    } else {
+      state.data.tasks.push({ ...base, createdAt: new Date().toISOString() });
+      toast('追加しました');
+    }
+
+    await persist();
+    closeModal('task-modal');
+    renderAll();
+  }
+
+  async function toggleComplete(taskId){
+    const t = state.data.tasks.find(x=>x.id===taskId);
+    if (!t) return;
+
+    if (t.status === 'running') stopTask(t.id, { setPaused: false });
+
+    t.status = (t.status === 'completed') ? 'pending' : 'completed';
+    t.updatedAt = new Date().toISOString();
+    await persist();
+    renderAll();
+  }
+
+  async function deleteTask(taskId){
+    if (!confirm('このタスクを削除しますか？')) return;
+    state.data.tasks = state.data.tasks.filter(t=>t.id!==taskId);
+    await persist();
+    toast('削除しました');
+    renderAll();
+  }
+
+  function openProjectModal(projectId=null){
+    const p = projectId ? state.data.projects.find(x=>x.id===projectId) : null;
+    document.getElementById('project-id').value = p?.id || '';
+    document.getElementById('project-name').value = p?.name || '';
+    openModal('project-modal');
+    setTimeout(()=>document.getElementById('project-name').focus(), 50);
+  }
+
+  async function saveProjectFromModal(){
+    const id = document.getElementById('project-id').value || uid();
+    const name = document.getElementById('project-name').value.trim();
+    if (!name){ toast('プロジェクト名が必要です'); return; }
+
+    const dup = state.data.projects.find(p=>p.name===name && p.id!==id);
+    if (dup){ toast('同名プロジェクトがあります'); return; }
+
+    const idx = state.data.projects.findIndex(p=>p.id===id);
+    if (idx>=0) state.data.projects[idx].name = name;
+    else state.data.projects.push({ id, name });
+
+    await persist();
+    closeModal('project-modal');
+    renderProjects();
+    toast('プロジェクトを保存');
+  }
+
+  /*********************
+   * 11) Export / Backup
+   *********************/
+  function exportToCSV(){
+    const rows = [
+      ['id','name','project','section','estimateMin','actualMin','date','repeat','status','priority','isInterrupt','notes','createdAt','updatedAt','startedAt']
+    ];
+    for (const t of state.data.tasks){
+      rows.push([
+        t.id,
+        t.name,
+        getProject(t.projectId)?.name || '',
+        getSection(t.sectionId)?.name || '',
+        t.estimateMin ?? 0,
+        t.actualMin ?? 0,
+        t.date || '',
+        t.repeat || 'none',
+        t.status || 'pending',
+        t.priority ?? 3,
+        t.isInterrupt ? 1 : 0,
+        (t.notes||'').replaceAll('\n','\\n'),
+        t.createdAt || '',
+        t.updatedAt || '',
+        t.startedAt || ''
+      ]);
+    }
+
+    const csv = rows.map(r => r.map(v => {
+      const s = String(v ?? '');
+      return (s.includes(',') || s.includes('"') || s.includes('\n')) ? `"${s.replaceAll('"','""')}"` : s;
+    }).join(',')).join('\n');
+
+    const blob = new Blob([csv], {type:'text/csv;charset=utf-8'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `taskchute_${nowISODate()}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
+  }
+
+  function backupJSON(){
+    const blob = new Blob([JSON.stringify(state.data, null, 2)], {type:'application/json'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `taskchute_backup_${nowISODate()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
+  }
+
+  async function restoreJSON(event){
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const obj = JSON.parse(text);
+      state.data = normalizeData(obj);
+      await persist();
+      hydrateSelectors();
+      renderProjects();
+      renderAll();
+      toast('復元しました');
+    } catch {
+      toast('復元に失敗しました');
+    } finally {
+      event.target.value = '';
+    }
+  }
+
+  async function clearData(){
+    if (!confirm('全データを消去します。よろしいですか？')) return;
+    await storage.clear();
+    location.reload();
+  }
+
+  /*********************
+   * 12) Tests
+   *********************/
+  function assert(cond, msg){ if (!cond) throw new Error(msg || 'assertion failed'); }
+
+  function runTests(){
+    try {
+      const snapshot = JSON.parse(JSON.stringify(state.data));
+
+      state.data.tasks = [];
+      const today = nowISODate();
+
+      state.data.tasks.push({
+        id: 't1', name: 'A', sectionId: 'morning', projectId: 'inbox', estimateMin: 10, actualMin: 0,
+        date: today, repeat: 'none', status: 'pending', priority: 3, isInterrupt: false,
+        notes: 'ok', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), startedAt: null
+      });
+      state.data.tasks.push({
+        id: 't2', name: 'B', sectionId: 'morning', projectId: 'inbox', estimateMin: 5, actualMin: 0,
+        date: today, repeat: 'none', status: 'running', priority: 3, isInterrupt: true,
+        notes: 'ok', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), startedAt: new Date(Date.now()-5*60000).toISOString()
+      });
+
+      state.data.ui.dateRange = 'today';
+      document.getElementById('filter-completed').checked = true;
+      document.getElementById('filter-uncompleted-only').checked = false;
+      renderAll();
+
+      assert(document.querySelector('[aria-label="start"]') !== null, 'start button should exist');
+
+      const evening = new Date();
+      evening.setHours(19,0,0,0);
+      enforceEveningRule(evening);
+      const moved = state.data.tasks.find(x=>x.id==='t2');
+      assert(moved.status !== 'running', 'running should stop at evening');
+      assert(moved.sectionId === 'forenoon', 'evening move should set forenoon');
+      assert(moved.date === addDaysISO(today, 1), 'evening move should postpone +1 day');
+
+      loopTask('t1');
+      const created = state.data.tasks.find(x=>x.name==='A' && x.id!=='t1' && x.status==='running');
+      assert(!!created, 'loop should create a new running task');
+      assert(created.sectionId === 'forenoon', 'loop should set forenoon');
+
+      state.data = snapshot;
+      hydrateSelectors();
+      renderProjects();
+      renderAll();
+      toast('テストOK');
+    } catch (e){
+      console.error('Tests failed', e);
+      toast('テスト失敗: ' + (e?.message || e));
+    }
+  }
+
+  /*********************
+   * 13) Boot + ticker
+   *********************/
+  let runningInterval = null;
+  function startTicker(){
+    if (runningInterval) return;
+    runningInterval = setInterval(()=>{
+      enforceEveningRule(new Date());
+      const hasRunning = state.data.tasks.some(t=>t.status==='running');
+      if (hasRunning) renderAll();
+    }, 30 * 1000);
+  }
+
+  async function loadApp(){
+    await refreshAuthChip();
+
+    // Supabase設定なしならローカルで動かす
+    if (!supabase){
+      const loadedLocal = await localAdapter.load();
+      if (loadedLocal) state.data = normalizeData(loadedLocal);
+      else {
+        const today = nowISODate();
+        state.data.tasks = [{
+          id: uid(),
+          name: '（例）今日の計画を立てる',
+          sectionId: 'morning',
+          projectId: 'inbox',
+          estimateMin: 15,
+          actualMin: 0,
+          date: today,
+          repeat: 'none',
+          status: 'pending',
+          priority: 3,
+          isInterrupt: false,
+          notes: '備考が必須です。ここに判断メモや条件を書きます。',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          startedAt: null,
+        }];
+        await localAdapter.save(state.data);
+      }
+
+      hydrateSelectors();
+      renderProjects();
+      setDateRange(state.data.ui.dateRange || 'today', true);
+      renderAll();
+      startTicker();
+      return;
+    }
+
+    // Supabase設定あり
+    const loaded = await storage.load();
+    if (loaded) state.data = normalizeData(loaded);
+    else {
+      // 初回: ローカルがあればそれを採用、なければサンプル作成
+      const local = await localAdapter.load();
+      if (local) {
+        state.data = normalizeData(local);
+        // ログイン済みならクラウドへも保存しておく
+        try { await storage.save(state.data); } catch {}
+      } else {
+        const today = nowISODate();
+        state.data.tasks = [{
+          id: uid(),
+          name: '（例）今日の計画を立てる',
+          sectionId: 'morning',
+          projectId: 'inbox',
+          estimateMin: 15,
+          actualMin: 0,
+          date: today,
+          repeat: 'none',
+          status: 'pending',
+          priority: 3,
+          isInterrupt: false,
+          notes: '備考が必須です。ここに判断メモや条件を書きます。',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          startedAt: null,
+        }];
+        await persist();
+      }
+    }
+
+    hydrateSelectors();
+    renderProjects();
+    setDateRange(state.data.ui.dateRange || 'today', true);
+    renderAll();
+    startTicker();
+
+    // Auth change -> cloud reload
+    supabase.auth.onAuthStateChange(async () => {
+      await refreshAuthChip();
+      // ログイン/ログアウトで表示を切り替え
+      const loaded2 = await storage.load();
+      if (loaded2) state.data = normalizeData(loaded2);
+      renderProjects();
+      renderAll();
+    });
+  }
+
+  loadApp();
+</script>
+</body>
+</html>
