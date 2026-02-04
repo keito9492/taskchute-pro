@@ -1054,7 +1054,7 @@
       var dateSection = document.createElement('section');
       dateSection.className = 'mb-10';
 
-      var dateHeader = document.createElement('div'); help
+      var dateHeader = document.createElement('div');
       dateHeader.className = 'flex items-center justify-between mb-3';
       var label = (dateKey==='未設定') ? '未設定' : prettyDate(dateKey);
       dateHeader.innerHTML = '<h2 class="text-[11px] font-black text-slate-400 uppercase tracking-widest">' + escapeHtml(label) + '</h2>' +
@@ -1200,7 +1200,9 @@
     var sectionId = document.getElementById('task-section').value;
     var projectId = document.getElementById('task-project').value;
     var estimateMin = Number(document.getElementById('task-duration').value || 0);
-    var date = document.getElementById('task-deadline').value || '';
+    var dateRaw = document.getElementById('task-deadline').value || '';
+    // date が未指定なら「今日」を自動セット
+    var date = dateRaw || nowISODate();
     var repeat = document.getElementById('task-repeat').value;
     var status = document.getElementById('task-status').value;
     var actualMin = Number(document.getElementById('task-actual').value || 0);
@@ -1237,11 +1239,16 @@
     } else {
       state.data.tasks.push(Object.assign({}, base, { createdAt: new Date().toISOString() }));
       toast('追加しました');
+      // 「未設定」表示中なら自動で「今日」に切り替える
+      if (state.data.ui.dateRange === 'undated') {
+    state.data.ui.dateRange = 'today';
+    }
     }
 
     await persist();
-    closeModal('task-modal');
-    renderAll();
+closeModal('task-modal');
+setDateRange(state.data.ui.dateRange || 'today', true);
+renderAll();
   }
 
   async function toggleComplete(taskId){
