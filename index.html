@@ -8,12 +8,11 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
 
-  <!-- Supabase JS (UMD) -->
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabaseClient.min.js"></script>
+  <!-- ✅ Supabase JS (UMD) : window.supabase が必ず生える版 -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+JP:wght@300;400;500;700&display=swap');
-
     body { font-family: 'Inter','Noto Sans JP',sans-serif; background-color:#f8fafc; }
 
     .status-running { border-left:4px solid #3b82f6; background:#eff6ff; }
@@ -53,40 +52,6 @@
 </head>
 <body class="h-screen overflow-hidden flex flex-col text-slate-900">
 
-  <!--
-    =========================
-    ✅ Supabase同期を使うために最初にやること
-    =========================
-
-    1) Supabaseで以下を作成
-       - Project
-       - Table: user_data
-
-       SQL（そのまま実行）:
-
-       create table if not exists public.user_data (
-         user_id uuid primary key references auth.users(id) on delete cascade,
-         data jsonb not null,
-         updated_at timestamptz not null default now()
-       );
-
-       alter table public.user_data enable row level security;
-
-       create policy "Users can read own data" on public.user_data
-         for select using (auth.uid() = user_id);
-
-       create policy "Users can upsert own data" on public.user_data
-         for insert with check (auth.uid() = user_id);
-
-       create policy "Users can update own data" on public.user_data
-         for update using (auth.uid() = user_id);
-
-    2) Authentication
-       - Email（Email+Password）をON
-
-    3) このHTML内の SUPABASE_URL / SUPABASE_ANON_KEY を自分の値に置換
-  -->
-
   <div id="sidebar-overlay" onclick="toggleSidebar()" class="fixed inset-0 bg-black/20 backdrop-blur-sm z-10 hidden sidebar-overlay"></div>
 
   <header class="bg-white border-b px-4 py-3 flex justify-between items-center shadow-sm z-30">
@@ -112,7 +77,6 @@
         <i class="fas fa-magnifying-glass text-slate-600"></i>
       </button>
 
-      <!-- Auth status -->
       <button id="auth-chip" onclick="openAuthModal()" class="hidden sm:flex items-center gap-2 px-3 py-2 rounded-xl border hover:bg-slate-50 text-xs font-bold text-slate-700" aria-label="auth">
         <i class="fas fa-user"></i>
         <span id="auth-label">未ログイン</span>
@@ -186,6 +150,7 @@
             <button onclick="runTests()" class="w-full bg-slate-900 text-white text-[10px] font-bold py-2 rounded-lg hover:bg-slate-800 transition">簡易テスト実行</button>
           </div>
         </div>
+
       </div>
     </aside>
 
@@ -232,7 +197,7 @@
   <!-- Task Modal -->
   <div id="task-modal" class="fixed inset-0 modal-bg z-50 hidden flex items-center justify-center p-4">
     <div class="bg-white rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
-      <div class="p-6 border-b flex justify-between items-center bg-slate-50">
+      <div class="p-6 border-b flex justify-between items-center hookup bg-slate-50">
         <h3 class="text-xl font-bold text-slate-800" id="modal-title">タスク詳細</h3>
         <button onclick="closeModal('task-modal')" class="text-slate-400 p-2 hover:bg-slate-200 rounded-full" aria-label="close"><i class="fas fa-times"></i></button>
       </div>
@@ -399,143 +364,200 @@
   <div id="toast" class="toast hidden"><div class="bg-slate-900 text-white text-sm px-4 py-2 rounded-xl shadow-xl"></div></div>
 
 <script>
+(function(){
+  'use strict';
+
   /*********************
    * 0) Supabase config（ここを置換）
    *********************/
-  supabaseClient_URL = 'https://opjgyixsmdbnmkwbxruy.supabase.co';
-  supabaseClient_ANON_KEY = 'sb_publishable_hQMgGP5NXKYOZUYf8938Jw_5MzJMhWA';
+  // ✅ ここは必ず定義されるように var にしています（TDZ対策）
+  var SUPABASE_URL = 'https://opjgyixsmdbnmkwbxruy.supabase.co';
+  var SUPABASE_ANON_KEY = 'sb_publishable_hQMgGP5NXKYOZUYf8938Jw_5MzJMhWA';
 
-  supabaseClient = (SUPABASE_URL.startsWith('http') && !SUPABASE_URL.includes('REPLACE_'))
-    ? window.supabaseClient.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
-    : null;
+  // ✅ supabase client（グローバルキャッシュ：二重読み込みでも落ちない）
+  var supabaseClient = window.__TASKCHUTE_SUPABASE_CLIENT || null;
+  try {
+    var canInit = (typeof SUPABASE_URL === 'string' && SUPABASE_URL.startsWith('http') && !SUPABASE_URL.includes('REPLACE_'));
+    if (!supabaseClient && canInit && window.supabase && typeof window.supabase.createClient === 'function') {
+      supabaseClient = window.__TASKCHUTE_SUPABASE_CLIENT = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    }
+  } catch (e) {
+    console.error('Supabase init failed', e);
+    supabaseClient = null;
+  }
 
   /*********************
    * 1) Storage adapters
    *********************/
-  const STORAGE_KEY = 'taskchute_pro_v1_local';
+  var STORAGE_KEY = 'taskchute_pro_v1_local';
 
-  class LocalStorageAdapter {
-    async load() {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return null;
-      try { return JSON.parse(raw); } catch { return null; }
-    }
-    async save(data) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-    }
-    async clear() {
-      localStorage.removeItem(STORAGE_KEY);
-    }
+  function LocalStorageAdapter(){}
+  LocalStorageAdapter.prototype.load = async function(){
+    var raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    try { return JSON.parse(raw); } catch { return null; }
+  };
+  LocalStorageAdapter.prototype.save = async function(data){
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  };
+  LocalStorageAdapter.prototype.clear = async function(){
+    localStorage.removeItem(STORAGE_KEY);
+  };
+
+  function SupabaseAdapter(client){ this.client = client; }
+  SupabaseAdapter.prototype.load = async function(){
+    if (!this.client) return null;
+    var sessionData = await this.client.auth.getSession();
+    var user = sessionData && sessionData.data && sessionData.data.session && sessionData.data.session.user;
+    if (!user) return null;
+
+    var res = await this.client.from('user_data').select('data').eq('user_id', user.id).maybeSingle();
+    if (res.error) throw res.error;
+    return (res.data && res.data.data) ? res.data.data : null;
+  };
+  SupabaseAdapter.prototype.save = async function(stateData){
+    if (!this.client) return;
+    var sessionData = await this.client.auth.getSession();
+    var user = sessionData && sessionData.data && sessionData.data.session && sessionData.data.session.user;
+    if (!user) throw new Error('not authenticated');
+
+    var res = await this.client.from('user_data')
+      .upsert({ user_id: user.id, data: stateData, updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
+    if (res.error) throw res.error;
+  };
+  SupabaseAdapter.prototype.clear = async function(){
+    if (!this.client) return;
+    var sessionData = await this.client.auth.getSession();
+    var user = sessionData && sessionData.data && sessionData.data.session && sessionData.data.session.user;
+    if (!user) return;
+
+    var res = await this.client.from('user_data').delete().eq('user_id', user.id);
+    if (res.error) throw res.error;
+  };
+
+  function HybridAdapter(local, cloud, client){
+    this.local = local;
+    this.cloud = cloud;
+    this.client = client;
   }
+  HybridAdapter.prototype.isAuthed = async function(){
+    if (!this.client) return false;
+    var s = await this.client.auth.getSession();
+    return !!(s && s.data && s.data.session && s.data.session.user);
+  };
+  HybridAdapter.prototype.load = async function(){
+    if (await this.isAuthed()) { setStorageModeUI('Supabase'); return await this.cloud.load(); }
+    setStorageModeUI('LocalStorage');
+    return await this.local.load();
+  };
+  HybridAdapter.prototype.save = async function(data){
+    if (await this.isAuthed()) { setStorageModeUI('Supabase'); return await this.cloud.save(data); }
+    setStorageModeUI('LocalStorage');
+    return await this.local.save(data);
+  };
+  HybridAdapter.prototype.clear = async function(){
+    if (await this.isAuthed()) { setStorageModeUI('Supabase'); return await this.cloud.clear(); }
+    setStorageModeUI('LocalStorage');
+    return await this.local.clear();
+  };
 
-  // ✅ これが「そのまま差し込める SupabaseAdapter」
-  class SupabaseAdapter {
-    constructor(client){ this.client = client; }
-
-    async load(){
-      if (!this.client) return null;
-      const { data: sessionData } = await this.client.auth.getSession();
-      const user = sessionData?.session?.user;
-      if (!user) return null;
-
-      const { data, error } = await this.client
-        .from('user_data')
-        .select('data')
-        .eq('user_id', user.id)
-        .maybeSingle();
-
-      if (error) throw error;
-      return data?.data ?? null;
-    }
-
-    async save(stateData){
-      if (!this.client) return;
-      const { data: sessionData } = await this.client.auth.getSession();
-      const user = sessionData?.session?.user;
-      if (!user) throw new Error('not authenticated');
-
-      const { error } = await this.client
-        .from('user_data')
-        .upsert({ user_id: user.id, data: stateData, updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
-
-      if (error) throw error;
-    }
-
-    async clear(){
-      if (!this.client) return;
-      const { data: sessionData } = await this.client.auth.getSession();
-      const user = sessionData?.session?.user;
-      if (!user) return;
-
-      const { error } = await this.client
-        .from('user_data')
-        .delete()
-        .eq('user_id', user.id);
-
-      if (error) throw error;
-    }
-  }
-
-  // ログイン済みならSupabase、未ログインならLocal
-  class HybridAdapter {
-    constructor(local, cloud, client){
-      this.local = local;
-      this.cloud = cloud;
-      this.client = client;
-    }
-
-    async isAuthed(){
-      if (!this.client) return false;
-      const { data } = await this.client.auth.getSession();
-      return !!data?.session?.user;
-    }
-
-    async load(){
-      if (await this.isAuthed()) {
-        setStorageModeUI('Supabase');
-        return await this.cloud.load();
-      }
-      setStorageModeUI('LocalStorage');
-      return await this.local.load();
-    }
-
-    async save(data){
-      if (await this.isAuthed()) {
-        setStorageModeUI('Supabase');
-        return await this.cloud.save(data);
-      }
-      setStorageModeUI('LocalStorage');
-      return await this.local.save(data);
-    }
-
-    async clear(){
-      if (await this.isAuthed()) {
-        setStorageModeUI('Supabase');
-        return await this.cloud.clear();
-      }
-      setStorageModeUI('LocalStorage');
-      return await this.local.clear();
-    }
-  }
-
-  const localAdapter = new LocalStorageAdapter();
-  const cloudAdapter = new SupabaseAdapter(supabase);
-  const storage = new HybridAdapter(localAdapter, cloudAdapter, supabase);
+  var localAdapter = new LocalStorageAdapter();
+  var cloudAdapter = new SupabaseAdapter(supabaseClient);
+  var storage = new HybridAdapter(localAdapter, cloudAdapter, supabaseClient);
 
   /*********************
    * 2) Utils
    *********************/
-  const nowISODate = () => new Date().toISOString().slice(0,10);
-  const uid = () => crypto.randomUUID ? crypto.randomUUID() : (Date.now().toString(36)+Math.random().toString(36).slice(2));
+  function nowISODate(){ return new Date().toISOString().slice(0,10); }
+  function uid(){ return (crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now().toString(36)+Math.random().toString(36).slice(2)); }
 
-  const DEFAULT_SECTIONS = [
+  function addDaysISO(iso, days){
+    var d = new Date(iso + 'T00:00:00');
+    d.setDate(d.getDate() + days);
+    var y = d.getFullYear();
+    var mo = String(d.getMonth()+1).padStart(2,'0');
+    var da = String(d.getDate()).padStart(2,'0');
+    return y + '-' + mo + '-' + da;
+  }
+
+  function setStorageModeUI(mode){
+    var el = document.getElementById('storage-mode');
+    var el2 = document.getElementById('auth-storage');
+    if (el) el.textContent = mode;
+    if (el2) el2.textContent = mode;
+  }
+
+  function toast(msg){
+    var root = document.getElementById('toast');
+    var box = root.querySelector('div');
+    box.textContent = msg;
+    root.classList.remove('hidden');
+    setTimeout(function(){ root.classList.add('hidden'); }, 1800);
+  }
+
+  function escapeHtml(str){
+    return String(str ?? '')
+      .replaceAll('&','&amp;')
+      .replaceAll('<','&lt;')
+      .replaceAll('>','&gt;')
+      .replaceAll('"','&quot;')
+      .replaceAll("'",'&#39;');
+  }
+
+  function fmtMin(min){
+    var m = Number(min)||0;
+    var h = Math.floor(m/60);
+    var mm = m%60;
+    return h + 'h ' + String(mm).padStart(2,'0') + 'm';
+  }
+
+  function prettyDate(iso){
+    try {
+      var d = new Date(iso + 'T00:00:00');
+      var w = ['日','月','火','水','木','金','土'][d.getDay()];
+      return d.getFullYear() + '/' + String(d.getMonth()+1).padStart(2,'0') + '/' + String(d.getDate()).padStart(2,'0') + ' (' + w + ')';
+    } catch {
+      return iso;
+    }
+  }
+
+  function elapsedMinSince(iso){
+    if (!iso) return 0;
+    var start = new Date(iso).getTime();
+    if (!Number.isFinite(start)) return 0;
+    var diffMs = Date.now() - start;
+    return Math.max(0, Math.floor(diffMs / 60000));
+  }
+
+  /*********************
+   * 3) Sections + time windows
+   *********************/
+  var DEFAULT_SECTIONS = [
     { id: 'morning', name: '朝' },
     { id: 'forenoon', name: '午前' },
     { id: 'afternoon', name: '午後' },
     { id: 'evening', name: '夜' },
   ];
 
-  const state = {
+  var SECTION_BOUNDARIES_MIN = {
+    morningStart: 5 * 60,
+    forenoonStart: 9 * 60 + 30,
+    afternoonStart: 13 * 60,
+    eveningStart: 18 * 60 + 30,
+  };
+
+  function classifyTimeToSectionId(dateObj){
+    var t = dateObj.getHours() * 60 + dateObj.getMinutes();
+    if (t >= SECTION_BOUNDARIES_MIN.eveningStart || t < SECTION_BOUNDARIES_MIN.morningStart) return 'evening';
+    if (t >= SECTION_BOUNDARIES_MIN.afternoonStart) return 'afternoon';
+    if (t >= SECTION_BOUNDARIES_MIN.forenoonStart) return 'forenoon';
+    return 'morning';
+  }
+
+  /*********************
+   * 4) State (varでTDZ回避)
+   *********************/
+  var state = {
     data: {
       meta: { version: 1, updatedAt: new Date().toISOString() },
       projects: [ { id: 'inbox', name: 'INBOX' } ],
@@ -546,12 +568,12 @@
   };
 
   function normalizeData(d){
-    const safe = d && typeof d === 'object' ? d : {};
-    const projects = Array.isArray(safe.projects) ? safe.projects : [ {id:'inbox', name:'INBOX'} ];
-    const sections = Array.isArray(safe.sections) ? safe.sections : DEFAULT_SECTIONS;
-    const tasks = Array.isArray(safe.tasks) ? safe.tasks : [];
-    const ui = safe.ui && typeof safe.ui === 'object' ? safe.ui : { dateRange:'today', projectFilter:null };
-    return { meta: { version: 1, updatedAt: new Date().toISOString() }, projects, sections, tasks, ui };
+    var safe = (d && typeof d === 'object') ? d : {};
+    var projects = Array.isArray(safe.projects) ? safe.projects : [ {id:'inbox', name:'INBOX'} ];
+    var sections = Array.isArray(safe.sections) ? safe.sections : DEFAULT_SECTIONS;
+    var tasks = Array.isArray(safe.tasks) ? safe.tasks : [];
+    var ui = (safe.ui && typeof safe.ui === 'object') ? safe.ui : { dateRange:'today', projectFilter:null };
+    return { meta: { version: 1, updatedAt: new Date().toISOString() }, projects: projects, sections: sections, tasks: tasks, ui: ui };
   }
 
   async function persist(){
@@ -564,47 +586,19 @@
     }
   }
 
-  function addDaysISO(iso, days){
-    const d = new Date(`${iso}T00:00:00`);
-    d.setDate(d.getDate() + days);
-    const y = d.getFullYear();
-    const mo = String(d.getMonth()+1).padStart(2,'0');
-    const da = String(d.getDate()).padStart(2,'0');
-    return `${y}-${mo}-${da}`;
-  }
-
-  function setStorageModeUI(mode){
-    const el = document.getElementById('storage-mode');
-    const el2 = document.getElementById('auth-storage');
-    if (el) el.textContent = mode;
-    if (el2) el2.textContent = mode;
-  }
-
   /*********************
-   * 3) Time windows
+   * 5) UI base
    *********************/
-  const SECTION_BOUNDARIES_MIN = {
-    morningStart: 5 * 60,
-    forenoonStart: 9 * 60 + 30,
-    afternoonStart: 13 * 60,
-    eveningStart: 18 * 60 + 30,
-  };
-
-  function classifyTimeToSectionId(dateObj){
-    const t = dateObj.getHours() * 60 + dateObj.getMinutes();
-    if (t >= SECTION_BOUNDARIES_MIN.eveningStart || t < SECTION_BOUNDARIES_MIN.morningStart) return 'evening';
-    if (t >= SECTION_BOUNDARIES_MIN.afternoonStart) return 'afternoon';
-    if (t >= SECTION_BOUNDARIES_MIN.forenoonStart) return 'forenoon';
-    return 'morning';
+  function openModal(id){ document.getElementById(id).classList.remove('hidden'); }
+  function closeModal(id){
+    document.getElementById(id).classList.add('hidden');
+    if (id === 'search-modal') document.getElementById('search-q').value = '';
   }
 
-  /*********************
-   * 4) UI base
-   *********************/
   function toggleSidebar(){
-    const sidebar = document.getElementById('sidebar');
-    const overlay = document.getElementById('sidebar-overlay');
-    const opened = !sidebar.classList.contains('sidebar-hidden');
+    var sidebar = document.getElementById('sidebar');
+    var overlay = document.getElementById('sidebar-overlay');
+    var opened = !sidebar.classList.contains('sidebar-hidden');
     if (opened){
       sidebar.classList.add('sidebar-hidden');
       overlay.classList.add('hidden');
@@ -617,10 +611,10 @@
   }
 
   function switchSidebarTab(tab){
-    const tabPlan = document.getElementById('tab-plan');
-    const tabSync = document.getElementById('tab-sync');
-    const viewPlan = document.getElementById('view-plan');
-    const viewSync = document.getElementById('view-sync');
+    var tabPlan = document.getElementById('tab-plan');
+    var tabSync = document.getElementById('tab-sync');
+    var viewPlan = document.getElementById('view-plan');
+    var viewSync = document.getElementById('view-sync');
 
     if (tab === 'plan'){
       tabPlan.classList.add('tab-active');
@@ -635,79 +629,75 @@
     }
   }
 
-  function openModal(id){ document.getElementById(id).classList.remove('hidden'); }
-  function closeModal(id){
-    document.getElementById(id).classList.add('hidden');
-    if (id === 'search-modal') document.getElementById('search-q').value = '';
-  }
-
-  function toast(msg){
-    const root = document.getElementById('toast');
-    const box = root.querySelector('div');
-    box.textContent = msg;
-    root.classList.remove('hidden');
-    setTimeout(() => root.classList.add('hidden'), 1800);
-  }
-
   function openQuickSearch(){
     openModal('search-modal');
-    setTimeout(()=>document.getElementById('search-q').focus(), 50);
+    setTimeout(function(){ document.getElementById('search-q').focus(); }, 50);
   }
 
-  document.addEventListener('keydown', (e)=>{
+  document.addEventListener('keydown', function(e){
     if (e.key === 'Escape'){
-      ['task-modal','project-modal','search-modal','auth-modal'].forEach(id=>{
-        const el = document.getElementById(id);
-        if (!el.classList.contains('hidden')) closeModal(id);
+      ['task-modal','project-modal','search-modal','auth-modal'].forEach(function(id){
+        var el = document.getElementById(id);
+        if (el && !el.classList.contains('hidden')) closeModal(id);
       });
     }
   });
 
+  /*********************
+   * 6) Selectors
+   *********************/
+  function hydrateSelectors(){
+    var sectionSel = document.getElementById('task-section');
+    if (sectionSel){
+      sectionSel.innerHTML = '';
+      state.data.sections.forEach(function(s){
+        var opt = document.createElement('option');
+        opt.value = s.id;
+        opt.textContent = s.name;
+        sectionSel.appendChild(opt);
+      });
+    }
+
+    var projSel = document.getElementById('task-project');
+    if (projSel){
+      projSel.innerHTML = '';
+      state.data.projects.forEach(function(p){
+        var opt = document.createElement('option');
+        opt.value = p.id;
+        opt.textContent = p.name;
+        projSel.appendChild(opt);
+      });
+    }
+  }
+
+  function getProject(id){ return state.data.projects.find(function(p){ return p.id===id; }); }
+  function getSection(id){ return state.data.sections.find(function(s){ return s.id===id; }); }
+
+  /*********************
+   * 7) Auth
+   *********************/
   function openAuthModal(){
-    if (!supabase){
+    if (!supabaseClient){
       toast('Supabase設定が未入力です');
       return;
     }
     openModal('auth-modal');
   }
 
-  function hydrateSelectors(){
-    const sectionSel = document.getElementById('task-section');
-    sectionSel.innerHTML = '';
-    state.data.sections.forEach(s=>{
-      const opt = document.createElement('option');
-      opt.value = s.id;
-      opt.textContent = s.name;
-      sectionSel.appendChild(opt);
-    });
-
-    const projSel = document.getElementById('task-project');
-    projSel.innerHTML = '';
-    state.data.projects.forEach(p=>{
-      const opt = document.createElement('option');
-      opt.value = p.id;
-      opt.textContent = p.name;
-      projSel.appendChild(opt);
-    });
-  }
-
-  /*********************
-   * 5) Auth actions
-   *********************/
   async function refreshAuthChip(){
-    const chip = document.getElementById('auth-chip');
-    const label = document.getElementById('auth-label');
+    var chip = document.getElementById('auth-chip');
+    var label = document.getElementById('auth-label');
     if (!chip || !label) return;
 
     chip.classList.remove('hidden');
 
-    if (!supabase){
+    if (!supabaseClient){
       label.textContent = '未設定';
       return;
     }
 
-    const { data } = await supabaseClient.auth.getSession();
-    const user = data?.session?.user;
+    var s = await supabaseClient.auth.getSession();
+    var user = s && s.data && s.data.session && s.data.session.user;
     if (user){
       label.textContent = user.email || 'ログイン中';
       setStorageModeUI('Supabase');
@@ -718,13 +708,13 @@
   }
 
   async function authSignIn(){
-    if (!supabase) return;
-    const email = document.getElementById('auth-email').value.trim();
-    const pass = document.getElementById('auth-pass').value;
+    if (!supabaseClient) return;
+    var email = document.getElementById('auth-email').value.trim();
+    var pass = document.getElementById('auth-pass').value;
     if (!email || !pass){ toast('Email/Passwordを入力してください'); return; }
 
-    const { error } = await supabaseClient.auth.signInWithPassword({ email, password: pass });
-    if (error){ toast('ログイン失敗: ' + error.message); return; }
+    var res = await supabaseClient.auth.signInWithPassword({ email: email, password: pass });
+    if (res.error){ toast('ログイン失敗: ' + res.error.message); return; }
 
     toast('ログインしました');
     await refreshAuthChip();
@@ -733,27 +723,27 @@
   }
 
   async function authSignUp(){
-    if (!supabase) return;
-    const email = document.getElementById('auth-email').value.trim();
-    const pass = document.getElementById('auth-pass').value;
+    if (!supabaseClient) return;
+    var email = document.getElementById('auth-email').value.trim();
+    var pass = document.getElementById('auth-pass').value;
     if (!email || !pass){ toast('Email/Passwordを入力してください'); return; }
 
-    const { error } = await supabaseClient.auth.signUp({ email, password: pass });
-    if (error){ toast('登録失敗: ' + error.message); return; }
+    var res = await supabaseClient.auth.signUp({ email: email, password: pass });
+    if (res.error){ toast('登録失敗: ' + res.error.message); return; }
 
-    toast('登録しました（そのままログイン済みのはずです）');
+    toast('登録しました');
     await refreshAuthChip();
     await loadFromCloudThenRender();
     closeModal('auth-modal');
   }
 
   async function authSignOut(){
-    if (!supabase) return;
+    if (!supabaseClient) return;
     await supabaseClient.auth.signOut();
     toast('ログアウトしました');
     await refreshAuthChip();
-    // ローカルに残っているデータを表示
-    const local = await localAdapter.load();
+
+    var local = await localAdapter.load();
     if (local) state.data = normalizeData(local);
     renderProjects();
     setDateRange(state.data.ui.dateRange || 'today', true);
@@ -761,12 +751,12 @@
   }
 
   async function migrateLocalToCloud(){
-    if (!supabase) return;
-    const { data } = await supabaseClient.auth.getSession();
-    const user = data?.session?.user;
+    if (!supabaseClient) return;
+    var s = await supabaseClient.auth.getSession();
+    var user = s && s.data && s.data.session && s.data.session.user;
     if (!user){ toast('先にログインしてください'); return; }
 
-    const local = await localAdapter.load();
+    var local = await localAdapter.load();
     if (!local){ toast('移行するローカルデータがありません'); return; }
 
     state.data = normalizeData(local);
@@ -779,7 +769,7 @@
 
   async function loadFromCloudThenRender(){
     try {
-      const loaded = await cloudAdapter.load();
+      var loaded = await cloudAdapter.load();
       if (loaded) state.data = normalizeData(loaded);
       renderProjects();
       setDateRange(state.data.ui.dateRange || 'today', true);
@@ -791,15 +781,14 @@
   }
 
   /*********************
-   * 6) Filtering
+   * 8) Filters
    *********************/
-  function setDateRange(range, skipPersist=false){
+  function setDateRange(range, skipPersist){
     state.data.ui.dateRange = range;
 
-    const ids = ['today','week','undated'];
-    ids.forEach(k=>{
-      const btn = document.getElementById('btn-'+k);
-      const btnm = document.getElementById('btn-'+k+'-m');
+    ['today','week','undated'].forEach(function(k){
+      var btn = document.getElementById('btn-'+k);
+      var btnm = document.getElementById('btn-'+k+'-m');
       if (btn){ btn.classList.toggle('active', k===range); btn.classList.toggle('text-slate-500', k!==range); }
       if (btnm){ btnm.classList.toggle('active', k===range); btnm.classList.toggle('text-slate-500', k!==range); }
     });
@@ -817,17 +806,17 @@
 
   function inWeek(dateStr){
     if (!dateStr) return false;
-    const d = new Date(dateStr + 'T00:00:00');
-    const now = new Date();
-    const day = now.getDay();
-    const diffToMon = (day === 0 ? -6 : 1 - day);
-    const monday = new Date(now); monday.setHours(0,0,0,0); monday.setDate(now.getDate() + diffToMon);
-    const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6); sunday.setHours(23,59,59,999);
+    var d = new Date(dateStr + 'T00:00:00');
+    var now = new Date();
+    var day = now.getDay();
+    var diffToMon = (day === 0 ? -6 : 1 - day);
+    var monday = new Date(now); monday.setHours(0,0,0,0); monday.setDate(now.getDate() + diffToMon);
+    var sunday = new Date(monday); sunday.setDate(monday.getDate() + 6); sunday.setHours(23,59,59,999);
     return d >= monday && d <= sunday;
   }
 
   function matchesDateRange(task){
-    const r = state.data.ui.dateRange;
+    var r = state.data.ui.dateRange;
     if (r === 'undated') return !task.date;
     if (r === 'today') return task.date === nowISODate();
     if (r === 'week') return inWeek(task.date);
@@ -835,19 +824,20 @@
   }
 
   function isVisibleByFilters(task){
-    const showCompleted = document.getElementById('filter-completed').checked;
-    const uncompletedOnly = document.getElementById('filter-uncompleted-only').checked;
+    var showCompleted = document.getElementById('filter-completed').checked;
+    var uncompletedOnly = document.getElementById('filter-uncompleted-only').checked;
 
     if (!showCompleted && task.status === 'completed') return false;
     if (uncompletedOnly && task.status === 'completed') return false;
 
-    const pf = state.data.ui.projectFilter;
+    var pf = state.data.ui.projectFilter;
     if (pf && task.projectId !== pf) return false;
 
-    const q = (document.getElementById('search-q')?.value || '').trim().toLowerCase();
+    var qEl = document.getElementById('search-q');
+    var q = (qEl ? qEl.value : '').trim().toLowerCase();
     if (q){
-      const pj = getProject(task.projectId)?.name || '';
-      const s = `${task.name} ${task.notes} ${pj}`.toLowerCase();
+      var pj = (getProject(task.projectId) && getProject(task.projectId).name) ? getProject(task.projectId).name : '';
+      var s = (task.name + ' ' + task.notes + ' ' + pj).toLowerCase();
       if (!s.includes(q)) return false;
     }
 
@@ -855,91 +845,35 @@
   }
 
   /*********************
-   * 7) Render helpers
+   * 9) Running controls
    *********************/
-  function getProject(id){ return state.data.projects.find(p=>p.id===id); }
-  function getSection(id){ return state.data.sections.find(s=>s.id===id); }
-
-  function statusClass(task){
-    if (task.status === 'completed') return 'status-completed';
-    if (task.status === 'running') return 'status-running';
-    if (task.status === 'paused') return 'status-paused';
-    if (task.date && task.date > nowISODate()) return 'status-future';
-    return 'status-pending';
-  }
-
-  function priorityBadge(p){
-    const map = {
-      1:['高','bg-rose-100 text-rose-700'],
-      2:['やや高','bg-amber-100 text-amber-700'],
-      3:['通常','bg-slate-100 text-slate-700'],
-      4:['低','bg-slate-100 text-slate-500']
-    };
-    const [label, cls] = map[p] || map[3];
-    return `<span class="text-[10px] font-bold px-2 py-0.5 rounded-full ${cls}">${label}</span>`;
-  }
-
-  function fmtMin(min){
-    const m = Number(min)||0;
-    const h = Math.floor(m/60);
-    const mm = m%60;
-    return `${h}h ${String(mm).padStart(2,'0')}m`;
-  }
-
-  function escapeHtml(str){
-    return String(str ?? '')
-      .replaceAll('&','&amp;')
-      .replaceAll('<','&lt;')
-      .replaceAll('>','&gt;')
-      .replaceAll('"','&quot;')
-      .replaceAll("'",'&#39;');
-  }
-
-  function prettyDate(iso){
-    try {
-      const d = new Date(iso + 'T00:00:00');
-      const w = ['日','月','火','水','木','金','土'][d.getDay()];
-      return `${d.getFullYear()}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')} (${w})`;
-    } catch {
-      return iso;
-    }
-  }
-
-  function elapsedMinSince(iso){
-    if (!iso) return 0;
-    const start = new Date(iso).getTime();
-    if (!Number.isFinite(start)) return 0;
-    const diffMs = Date.now() - start;
-    return Math.max(0, Math.floor(diffMs / 60000));
-  }
-
-  /*********************
-   * 8) Running controls
-   *********************/
-  function stopTask(taskId, opts={}){
-    const t = state.data.tasks.find(x=>x.id===taskId);
+  function stopTask(taskId, opts){
+    opts = opts || {};
+    var t = state.data.tasks.find(function(x){ return x.id===taskId; });
     if (!t) return;
 
     if (t.status === 'running' && t.startedAt){
-      const add = elapsedMinSince(t.startedAt);
+      var add = elapsedMinSince(t.startedAt);
       if (add > 0) t.actualMin = Math.max(0, Number(t.actualMin||0) + add);
     }
 
     t.startedAt = null;
     if (opts.setPaused) t.status = 'paused';
-    else if (t.status === 'running') t.status = 'pending';
+    elseToggle(t);
 
     t.updatedAt = new Date().toISOString();
   }
 
+  function elseToggle(t){
+    if (t.status === 'running') t.status = 'pending';
+  }
+
   async function startTask(taskId){
-    const t = state.data.tasks.find(x=>x.id===taskId);
+    var t = state.data.tasks.find(function(x){ return x.id===taskId; });
     if (!t) return;
 
-    const running = state.data.tasks.find(x=>x.status==='running' && x.id!==taskId);
-    if (running){
-      stopTask(running.id, { setPaused: false });
-    }
+    var running = state.data.tasks.find(function(x){ return x.status==='running' && x.id!==taskId; });
+    if (running) stopTask(running.id, { setPaused: false });
 
     t.status = 'running';
     t.startedAt = new Date().toISOString();
@@ -955,13 +889,14 @@
     renderAll();
   }
 
-  async function postponeTask(taskId, days=1){
-    const t = state.data.tasks.find(x=>x.id===taskId);
+  async function postponeTask(taskId, days){
+    days = days || 1;
+    var t = state.data.tasks.find(function(x){ return x.id===taskId; });
     if (!t) return;
 
     if (t.status === 'running') stopTask(t.id, { setPaused: false });
 
-    const base = t.date ? t.date : nowISODate();
+    var base = t.date ? t.date : nowISODate();
     t.date = addDaysISO(base, days);
     t.updatedAt = new Date().toISOString();
 
@@ -970,49 +905,46 @@
     renderAll();
   }
 
-  function enforceEveningRule(now=new Date()){
-    const current = classifyTimeToSectionId(now);
+  function enforceEveningRule(now){
+    now = now || new Date();
+    var current = classifyTimeToSectionId(now);
     if (current !== 'evening') return;
 
-    const runningTask = state.data.tasks.find(t=>t.status==='running');
+    var runningTask = state.data.tasks.find(function(t){ return t.status==='running'; });
     if (!runningTask) return;
 
     stopTask(runningTask.id, { setPaused: false });
 
-    const base = runningTask.date ? runningTask.date : nowISODate();
+    var base = runningTask.date ? runningTask.date : nowISODate();
     runningTask.date = addDaysISO(base, 1);
     runningTask.sectionId = 'forenoon';
-
     runningTask.updatedAt = new Date().toISOString();
     persist();
     toast('夜になったので停止 → 翌日午前に先送りしました');
   }
 
   async function loopTask(taskId){
-    const t = state.data.tasks.find(x=>x.id===taskId);
+    var t = state.data.tasks.find(function(x){ return x.id===taskId; });
     if (!t) return;
 
-    if (t.status === 'running'){
-      stopTask(t.id, { setPaused: false });
-    }
+    if (t.status === 'running') stopTask(t.id, { setPaused: false });
+
     t.status = 'completed';
     t.startedAt = null;
     t.updatedAt = new Date().toISOString();
 
-    const baseDate = t.date ? t.date : nowISODate();
-    const nextDate = addDaysISO(baseDate, 1);
+    var baseDate = t.date ? t.date : nowISODate();
+    var nextDate = addDaysISO(baseDate, 1);
 
-    const newTask = {
-      ...JSON.parse(JSON.stringify(t)),
-      id: uid(),
-      date: nextDate,
-      sectionId: 'forenoon',
-      actualMin: 0,
-      status: 'running',
-      startedAt: new Date().toISOString(),
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
+    var newTask = JSON.parse(JSON.stringify(t));
+    newTask.id = uid();
+    newTask.date = nextDate;
+    newTask.sectionId = 'forenoon';
+    newTask.actualMin = 0;
+    newTask.status = 'running';
+    newTask.startedAt = new Date().toISOString();
+    newTask.createdAt = new Date().toISOString();
+    newTask.updatedAt = new Date().toISOString();
 
     state.data.tasks.push(newTask);
 
@@ -1022,45 +954,62 @@
   }
 
   /*********************
-   * 9) Totals + Projects + Render
+   * 10) Render
    *********************/
+  function statusClass(task){
+    if (task.status === 'completed') return 'status-completed';
+    if (task.status === 'running') return 'status-running';
+    if (task.status === 'paused') return 'status-paused';
+    if (task.date && task.date > nowISODate()) return 'status-future';
+    return 'status-pending';
+  }
+
+  function priorityBadge(p){
+    var map = {
+      1:['高','bg-rose-100 text-rose-700'],
+      2:['やや高','bg-amber-100 text-amber-700'],
+      3:['通常','bg-slate-100 text-slate-700'],
+      4:['低','bg-slate-100 text-slate-500']
+    };
+    var tup = map[p] || map[3];
+    return '<span class="text-[10px] font-bold px-2 py-0.5 rounded-full ' + tup[1] + '">' + tup[0] + '</span>';
+  }
+
   function recomputeTotals(){
-    const visible = state.data.tasks.filter(isVisibleByFilters);
-    const est = visible.reduce((a,t)=>a + (Number(t.estimateMin)||0), 0);
-    const act = visible.reduce((a,t)=>a + (Number(t.actualMin)||0), 0);
+    var visible = state.data.tasks.filter(isVisibleByFilters);
+    var est = visible.reduce(function(a,t){ return a + (Number(t.estimateMin)||0); }, 0);
+    var act = visible.reduce(function(a,t){ return a + (Number(t.actualMin)||0); }, 0);
     document.getElementById('total-estimate').textContent = fmtMin(est);
     document.getElementById('total-actual').textContent = fmtMin(act);
 
-    const undatedCount = state.data.tasks.filter(t=>!t.date && t.status!=='completed').length;
+    var undatedCount = state.data.tasks.filter(function(t){ return !t.date && t.status!=='completed'; }).length;
     document.getElementById('undated-count').textContent = String(undatedCount);
 
-    const interruptCount = visible.filter(t=>!!t.isInterrupt).length;
+    var interruptCount = visible.filter(function(t){ return !!t.isInterrupt; }).length;
     document.getElementById('interrupt-count').textContent = String(interruptCount);
 
-    const now = new Date();
-    const finish = new Date(now.getTime() + est*60000);
-    const hh = String(finish.getHours()).padStart(2,'0');
-    const mm = String(finish.getMinutes()).padStart(2,'0');
-    document.getElementById('finish-estimate').textContent = `${hh}:${mm}`;
+    var now = new Date();
+    var finish = new Date(now.getTime() + est*60000);
+    var hh = String(finish.getHours()).padStart(2,'0');
+    var mm = String(finish.getMinutes()).padStart(2,'0');
+    document.getElementById('finish-estimate').textContent = hh + ':' + mm;
   }
 
   function renderProjects(){
-    const list = document.getElementById('project-list');
-    const pf = state.data.ui.projectFilter;
+    var list = document.getElementById('project-list');
+    var pf = state.data.ui.projectFilter;
     list.innerHTML = '';
 
-    state.data.projects
-      .slice()
-      .sort((a,b)=> a.name.localeCompare(b.name,'ja'))
-      .forEach(p=>{
-        const count = state.data.tasks.filter(t=>t.projectId===p.id && t.status!=='completed').length;
-        const active = pf === p.id;
-        const btn = document.createElement('button');
-        btn.className = `w-full flex justify-between items-center px-3 py-2 rounded-xl text-xs font-bold border transition ${active ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white border-slate-100 text-slate-700 hover:bg-slate-50'}`;
-        btn.innerHTML = `<span class="truncate">${escapeHtml(p.name)}</span><span class="text-[10px] ${active ? 'text-blue-700' : 'text-slate-400'}">${count}</span>`;
-        btn.onclick = ()=> setProjectFilter(p.id);
-        list.appendChild(btn);
-      });
+    state.data.projects.slice().sort(function(a,b){ return a.name.localeCompare(b.name,'ja'); }).forEach(function(p){
+      var count = state.data.tasks.filter(function(t){ return t.projectId===p.id && t.status!=='completed'; }).length;
+      var active = pf === p.id;
+      var btn = document.createElement('button');
+      btn.className = 'w-full flex justify-between items-center px-3 py-2 rounded-xl text-xs font-bold border transition ' +
+        (active ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white border-slate-100 text-slate-700 hover:bg-slate-50');
+      btn.innerHTML = '<span class="truncate">' + escapeHtml(p.name) + '</span><span class="text-[10px] ' + (active ? 'text-blue-700' : 'text-slate-400') + '">' + count + '</span>';
+      btn.onclick = function(){ setProjectFilter(p.id); };
+      list.appendChild(btn);
+    });
 
     hydrateSelectors();
   }
@@ -1068,240 +1017,225 @@
   function renderAll(){
     enforceEveningRule(new Date());
 
-    const container = document.getElementById('task-container');
+    var container = document.getElementById('task-container');
 
-    const tasks = state.data.tasks
-      .slice()
-      .sort((a,b)=>{
-        if (state.data.ui.dateRange === 'undated') return (a.createdAt||'').localeCompare(b.createdAt||'');
-        const ad = a.date || '9999-12-31';
-        const bd = b.date || '9999-12-31';
-        if (ad !== bd) return ad.localeCompare(bd);
-        const sIdx = (id)=> state.data.sections.findIndex(s=>s.id===id);
-        const ai = sIdx(a.sectionId); const bi = sIdx(b.sectionId);
-        if (ai !== bi) return ai - bi;
-        return (Number(a.priority)||3) - (Number(b.priority)||3);
-      })
-      .filter(isVisibleByFilters);
+    var tasks = state.data.tasks.slice().sort(function(a,b){
+      if (state.data.ui.dateRange === 'undated') return (a.createdAt||'').localeCompare(b.createdAt||'');
+      var ad = a.date || '9999-12-31';
+      var bd = b.date || '9999-12-31';
+      if (ad !== bd) return ad.localeCompare(bd);
+      var sIdx = function(id){ return state.data.sections.findIndex(function(s){ return s.id===id; }); };
+      var ai = sIdx(a.sectionId); var bi = sIdx(b.sectionId);
+      if (ai !== bi) return ai - bi;
+      return (Number(a.priority)||3) - (Number(b.priority)||3);
+    }).filter(isVisibleByFilters);
 
     if (!tasks.length){
-      container.innerHTML = `
-        <div class="bg-white border rounded-3xl p-8 text-center">
-          <div class="text-3xl mb-2">🗂️</div>
-          <p class="font-bold text-slate-800">表示するタスクがありません</p>
-          <p class="text-sm text-slate-500 mt-1">右下の＋から追加できます</p>
-        </div>
-      `;
+      container.innerHTML = '<div class="bg-white border rounded-3xl p-8 text-center">' +
+        '<div class="text-3xl mb-2">🗂️</div>' +
+        '<p class="font-bold text-slate-800">表示するタスクがありません</p>' +
+        '<p class="text-sm text-slate-500 mt-1">右下の＋から追加できます</p>' +
+        '</div>';
       recomputeTotals();
       return;
     }
 
-    const dateGroups = new Map();
-    for (const t of tasks){
-      const dk = t.date || '未設定';
+    // date -> tasks
+    var dateGroups = new Map();
+    tasks.forEach(function(t){
+      var dk = t.date || '未設定';
       if (!dateGroups.has(dk)) dateGroups.set(dk, []);
       dateGroups.get(dk).push(t);
-    }
+    });
 
     container.innerHTML = '';
 
-    for (const [dateKey, dateItems] of dateGroups.entries()){
-      const dateSection = document.createElement('section');
+    dateGroups.forEach(function(dateItems, dateKey){
+      var dateSection = document.createElement('section');
       dateSection.className = 'mb-10';
 
-      const dateHeader = document.createElement('div');
+      var dateHeader = document.createElement('div'); help
       dateHeader.className = 'flex items-center justify-between mb-3';
-      const label = (dateKey==='未設定') ? '未設定' : prettyDate(dateKey);
-      dateHeader.innerHTML = `
-        <h2 class="text-[11px] font-black text-slate-400 uppercase tracking-widest">${escapeHtml(label)}</h2>
-        <div class="text-[11px] text-slate-400">${dateItems.length}件</div>
-      `;
+      var label = (dateKey==='未設定') ? '未設定' : prettyDate(dateKey);
+      dateHeader.innerHTML = '<h2 class="text-[11px] font-black text-slate-400 uppercase tracking-widest">' + escapeHtml(label) + '</h2>' +
+        '<div class="text-[11px] text-slate-400">' + dateItems.length + '件</div>';
 
-      const bySection = new Map();
-      for (const t of dateItems){
-        const sid = t.sectionId || 'unknown';
+      // section -> tasks
+      var bySection = new Map();
+      dateItems.forEach(function(t){
+        var sid = t.sectionId || 'unknown';
         if (!bySection.has(sid)) bySection.set(sid, []);
         bySection.get(sid).push(t);
-      }
+      });
 
-      const list = document.createElement('div');
+      var list = document.createElement('div');
       list.className = 'space-y-6';
 
-      const sectionOrder = state.data.sections.map(s=>s.id);
-      const keys = Array.from(bySection.keys()).sort((a,b)=>{
-        const ai = sectionOrder.indexOf(a);
-        const bi = sectionOrder.indexOf(b);
+      var sectionOrder = state.data.sections.map(function(s){ return s.id; });
+      var keys = Array.from(bySection.keys()).sort(function(a,b){
+        var ai = sectionOrder.indexOf(a);
+        var bi = sectionOrder.indexOf(b);
         if (ai === -1 && bi === -1) return String(a).localeCompare(String(b));
         if (ai === -1) return 1;
         if (bi === -1) return -1;
         return ai - bi;
       });
 
-      for (const sid of keys){
-        const sectionItems = bySection.get(sid);
-        const seName = (sid==='unknown') ? '（未分類）' : (getSection(sid)?.name || '（未分類）');
-        const secEst = sectionItems.reduce((a,t)=>a + (Number(t.estimateMin)||0), 0);
-        const secAct = sectionItems.reduce((a,t)=>a + (Number(t.actualMin)||0), 0);
-        const secInterrupt = sectionItems.filter(t=>!!t.isInterrupt).length;
+      keys.forEach(function(sid){
+        var sectionItems = bySection.get(sid);
+        var seName = (sid==='unknown') ? '（未分類）' : ((getSection(sid) && getSection(sid).name) ? getSection(sid).name : '（未分類）');
+        var secEst = sectionItems.reduce(function(a,t){ return a + (Number(t.estimateMin)||0); }, 0);
+        var secAct = sectionItems.reduce(function(a,t){ return a + (Number(t.actualMin)||0); }, 0);
+        var secInterrupt = sectionItems.filter(function(t){ return !!t.isInterrupt; }).length;
 
-        const header = document.createElement('div');
+        var header = document.createElement('div');
         header.className = 'flex items-center justify-between px-1';
-        header.innerHTML = `
-          <div class="flex items-center gap-2">
-            <span class="text-xs font-black text-slate-700">${escapeHtml(seName)}</span>
-            <span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">${sectionItems.length}件</span>
-            ${secInterrupt ? `<span class=\"text-[10px] font-black px-2 py-0.5 rounded-full bg-rose-100 text-rose-700\">割り込み ${secInterrupt}</span>` : ''}
-          </div>
-          <div class="text-[11px] text-slate-500">見積 ${fmtMin(secEst)} / 実績 ${fmtMin(secAct)}</div>
-        `;
+        header.innerHTML = '<div class="flex items-center gap-2">' +
+          '<span class="text-xs font-black text-slate-700">' + escapeHtml(seName) + '</span>' +
+          '<span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">' + sectionItems.length + '件</span>' +
+          (secInterrupt ? '<span class="text-[10px] font-black px-2 py-0.5 rounded-full bg-rose-100 text-rose-700">割り込み ' + secInterrupt + '</span>' : '') +
+          '</div>' +
+          '<div class="text-[11px] text-slate-500">見積 ' + fmtMin(secEst) + ' / 実績 ' + fmtMin(secAct) + '</div>';
 
-        const cards = document.createElement('div');
+        var cards = document.createElement('div');
         cards.className = 'space-y-3';
 
-        for (const t of sectionItems){
-          const pj = getProject(t.projectId)?.name || '—';
-          const elapsed = (t.status==='running') ? elapsedMinSince(t.startedAt) : 0;
+        sectionItems.forEach(function(t){
+          var pj = (getProject(t.projectId) && getProject(t.projectId).name) ? getProject(t.projectId).name : '—';
+          var elapsed = (t.status==='running') ? elapsedMinSince(t.startedAt) : 0;
 
-          const card = document.createElement('div');
-          card.className = `task-card bg-white border border-slate-100 rounded-3xl p-5 transition ${statusClass(t)}`;
-          card.innerHTML = `
-            <div class="flex items-start justify-between gap-3">
-              <div class="min-w-0">
-                <div class="flex items-center gap-2 flex-wrap">
-                  <p class="font-bold text-slate-800 truncate">${escapeHtml(t.name || '(無題)')}</p>
-                  ${t.isInterrupt ? '<span class="text-[10px] font-black px-2 py-0.5 rounded-full bg-rose-100 text-rose-700">割り込み</span>' : ''}
-                  ${priorityBadge(t.priority)}
-                  ${t.status==='running' ? `<span class=\"text-[10px] font-black px-2 py-0.5 rounded-full bg-blue-100 text-blue-700\">経過 ${elapsed}m</span>` : ''}
-                </div>
-                <div class="mt-1 text-xs text-slate-500 flex flex-wrap gap-x-3 gap-y-1">
-                  <span><i class="fa-regular fa-folder-open"></i> ${escapeHtml(pj)}</span>
-                  <span><i class="fa-regular fa-hourglass"></i> 見積 ${fmtMin(t.estimateMin)}</span>
-                  <span><i class="fa-regular fa-circle-check"></i> 実績 ${fmtMin(t.actualMin)}</span>
-                </div>
-              </div>
+          var card = document.createElement('div');
+          card.className = 'task-card bg-white border border-slate-100 rounded-3xl p-5 transition ' + statusClass(t);
 
-              <div class="task-actions flex items-center gap-2">
-                ${t.status === 'running'
-                  ? `<button onclick=\"pauseTask('${t.id}')\" class=\"p-2 rounded-xl border hover:bg-slate-50\" title=\"停止\" aria-label=\"pause\"><i class=\"fas fa-pause text-amber-600\"></i></button>`
-                  : `<button onclick=\"startTask('${t.id}')\" class=\"p-2 rounded-xl border hover:bg-slate-50\" title=\"再生\" aria-label=\"start\"><i class=\"fas fa-play text-blue-600\"></i></button>`
-                }
+          card.innerHTML = '<div class="flex items-start justify-between gap-3">' +
+            '<div class="min-w-0">' +
+              '<div class="flex items-center gap-2 flex-wrap">' +
+                '<p class="font-bold text-slate-800 truncate">' + escapeHtml(t.name || '(無題)') + '</p>' +
+                (t.isInterrupt ? '<span class="text-[10px] font-black px-2 py-0.5 rounded-full bg-rose-100 text-rose-700">割り込み</span>' : '') +
+                priorityBadge(t.priority) +
+                (t.status==='running' ? '<span class="text-[10px] font-black px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">経過 ' + elapsed + 'm</span>' : '') +
+              '</div>' +
+              '<div class="mt-1 text-xs text-slate-500 flex flex-wrap gap-x-3 gap-y-1">' +
+                '<span><i class="fa-regular fa-folder-open"></i> ' + escapeHtml(pj) + '</span>' +
+                '<span><i class="fa-regular fa-hourglass"></i> 見積 ' + fmtMin(t.estimateMin) + '</span>' +
+                '<span><i class="fa-regular fa-circle-check"></i> 実績 ' + fmtMin(t.actualMin) + '</span>' +
+              '</div>' +
+            '</div>' +
 
-                <button onclick="postponeTask('${t.id}', 1)" class="p-2 rounded-xl border hover:bg-slate-50" title="先送り（+1日）" aria-label="postpone">
-                  <i class="fas fa-forward text-slate-600"></i>
-                </button>
+            '<div class="task-actions flex items-center gap-2">' +
+              (t.status === 'running'
+                ? '<button onclick="pauseTask(\'' + t.id + '\')" class="p-2 rounded-xl border hover:bg-slate-50" title="停止" aria-label="pause"><i class="fas fa-pause text-amber-600"></i></button>'
+                : '<button onclick="startTask(\'' + t.id + '\')" class="p-2 rounded-xl border hover:bg-slate-50" title="再生" aria-label="start"><i class="fas fa-play text-blue-600"></i></button>'
+              ) +
 
-                <button onclick="loopTask('${t.id}')" class="p-2 rounded-xl border hover:bg-slate-50" title="ループ（次回を午前で作って開始）" aria-label="loop">
-                  <i class="fas fa-rotate-right text-purple-600"></i>
-                </button>
+              '<button onclick="postponeTask(\'' + t.id + '\', 1)" class="p-2 rounded-xl border hover:bg-slate-50" title="先送り（+1日）" aria-label="postpone"><i class="fas fa-forward text-slate-600"></i></button>' +
+              '<button onclick="loopTask(\'' + t.id + '\')" class="p-2 rounded-xl border hover:bg-slate-50" title="ループ" aria-label="loop"><i class="fas fa-rotate-right text-purple-600"></i></button>' +
+              '<button onclick="toggleComplete(\'' + t.id + '\')" class="p-2 rounded-xl border hover:bg-slate-50" title="完了切替" aria-label="toggle complete">' +
+                '<i class="fas ' + (t.status==='completed' ? 'fa-rotate-left text-slate-500' : 'fa-check text-emerald-600') + '"></i>' +
+              '</button>' +
+              '<button onclick="openTaskModal(\'' + t.id + '\')" class="p-2 rounded-xl border hover:bg-slate-50" title="編集" aria-label="edit"><i class="fas fa-pen text-slate-600"></i></button>' +
+              '<button onclick="deleteTask(\'' + t.id + '\')" class="p-2 rounded-xl border hover:bg-slate-50" title="削除" aria-label="delete"><i class="fas fa-trash text-rose-600"></i></button>' +
+            '</div>' +
+          '</div>' +
 
-                <button onclick="toggleComplete('${t.id}')" class="p-2 rounded-xl border hover:bg-slate-50" title="完了切替" aria-label="toggle complete">
-                  <i class="fas ${t.status==='completed' ? 'fa-rotate-left text-slate-500' : 'fa-check text-emerald-600'}"></i>
-                </button>
-                <button onclick="openTaskModal('${t.id}')" class="p-2 rounded-xl border hover:bg-slate-50" title="編集" aria-label="edit">
-                  <i class="fas fa-pen text-slate-600"></i>
-                </button>
-                <button onclick="deleteTask('${t.id}')" class="p-2 rounded-xl border hover:bg-slate-50" title="削除" aria-label="delete">
-                  <i class="fas fa-trash text-rose-600"></i>
-                </button>
-              </div>
-            </div>
+          '<div class="mt-4 bg-slate-50 border border-slate-100 rounded-2xl p-3">' +
+            '<p class="text-xs text-slate-700 whitespace-pre-wrap">' + escapeHtml(t.notes || '') + '</p>' +
+          '</div>';
 
-            <div class="mt-4 bg-slate-50 border border-slate-100 rounded-2xl p-3">
-              <p class="text-xs text-slate-700 whitespace-pre-wrap">${escapeHtml(t.notes || '')}</p>
-            </div>
-          `;
           cards.appendChild(card);
-        }
+        });
 
-        const block = document.createElement('div');
+        var block = document.createElement('div');
         block.className = 'space-y-3';
         block.appendChild(header);
         block.appendChild(cards);
         list.appendChild(block);
-      }
+      });
 
       dateSection.appendChild(dateHeader);
       dateSection.appendChild(list);
       container.appendChild(dateSection);
-    }
+    });
 
     recomputeTotals();
   }
 
   /*********************
-   * 10) CRUD
+   * 11) CRUD
    *********************/
-  function openTaskModal(taskId=null, isInterrupt=false){
-    const t = taskId ? state.data.tasks.find(x=>x.id===taskId) : null;
+  function openTaskModal(taskId, isInterrupt){
+    taskId = taskId || null;
+    isInterrupt = !!isInterrupt;
+
+    var t = taskId ? state.data.tasks.find(function(x){ return x.id===taskId; }) : null;
 
     document.getElementById('modal-title').textContent = taskId ? 'タスク編集' : 'タスク追加';
-    document.getElementById('task-id').value = t?.id || '';
-    document.getElementById('task-is-interrupt').value = (t?.isInterrupt ?? isInterrupt) ? '1' : '';
+    document.getElementById('task-id').value = (t && t.id) ? t.id : '';
+    document.getElementById('task-is-interrupt').value = ((t && t.isInterrupt) || isInterrupt) ? '1' : '';
 
-    const defaultSection = 'afternoon';
-    const defaultDate = nowISODate();
+    var defaultSection = 'afternoon';
+    var defaultDate = nowISODate();
 
-    document.getElementById('task-name').value = t?.name || '';
-    document.getElementById('task-section').value = t?.sectionId || defaultSection;
-    document.getElementById('task-project').value = t?.projectId || 'inbox';
+    document.getElementById('task-name').value = (t && t.name) ? t.name : '';
+    document.getElementById('task-section').value = (t && t.sectionId) ? t.sectionId : defaultSection;
+    document.getElementById('task-project').value = (t && t.projectId) ? t.projectId : 'inbox';
 
-    document.getElementById('task-duration').value = (t?.estimateMin ?? 0);
-    document.getElementById('task-deadline').value = (t ? (t.date || '') : defaultDate);
-    document.getElementById('task-repeat').value = t?.repeat || 'none';
-    document.getElementById('task-status').value = t?.status || 'pending';
-    document.getElementById('task-actual').value = (t?.actualMin ?? 0);
-    document.getElementById('task-priority').value = String(t?.priority ?? 3);
-
-    document.getElementById('task-notes').value = t?.notes || '';
+    document.getElementById('task-duration').value = (t && t.estimateMin != null) ? t.estimateMin : 0;
+    document.getElementById('task-deadline').value = t ? (t.date || '') : defaultDate;
+    document.getElementById('task-repeat').value = (t && t.repeat) ? t.repeat : 'none';
+    document.getElementById('task-status').value = (t && t.status) ? t.status : 'pending';
+    document.getElementById('task-actual').value = (t && t.actualMin != null) ? t.actualMin : 0;
+    document.getElementById('task-priority').value = String((t && t.priority != null) ? t.priority : 3);
+    document.getElementById('task-notes').value = (t && t.notes) ? t.notes : '';
 
     openModal('task-modal');
-    setTimeout(()=>document.getElementById('task-name').focus(), 50);
+    setTimeout(function(){ document.getElementById('task-name').focus(); }, 50);
   }
 
   async function saveTaskFromModal(){
-    const id = document.getElementById('task-id').value || uid();
-    const isInterrupt = !!document.getElementById('task-is-interrupt').value;
+    var id = document.getElementById('task-id').value || uid();
+    var isInterrupt = !!document.getElementById('task-is-interrupt').value;
 
-    const name = document.getElementById('task-name').value.trim();
-    const sectionId = document.getElementById('task-section').value;
-    const projectId = document.getElementById('task-project').value;
-    const estimateMin = Number(document.getElementById('task-duration').value || 0);
-    const date = document.getElementById('task-deadline').value || '';
-    const repeat = document.getElementById('task-repeat').value;
-    const status = document.getElementById('task-status').value;
-    const actualMin = Number(document.getElementById('task-actual').value || 0);
-    const priority = Number(document.getElementById('task-priority').value || 3);
-    const notes = document.getElementById('task-notes').value.trim();
+    var name = document.getElementById('task-name').value.trim();
+    var sectionId = document.getElementById('task-section').value;
+    var projectId = document.getElementById('task-project').value;
+    var estimateMin = Number(document.getElementById('task-duration').value || 0);
+    var date = document.getElementById('task-deadline').value || '';
+    var repeat = document.getElementById('task-repeat').value;
+    var status = document.getElementById('task-status').value;
+    var actualMin = Number(document.getElementById('task-actual').value || 0);
+    var priority = Number(document.getElementById('task-priority').value || 3);
+    var notes = document.getElementById('task-notes').value.trim();
 
     if (!name){ toast('タスク名が必要です'); return; }
     if (!notes){ toast('備考は必須です'); return; }
 
-    const exists = state.data.tasks.findIndex(t=>t.id===id);
+    var idx = state.data.tasks.findIndex(function(t){ return t.id===id; });
 
-    const base = {
-      id,
-      name,
-      sectionId,
-      projectId,
+    var base = {
+      id: id,
+      name: name,
+      sectionId: sectionId,
+      projectId: projectId,
       estimateMin: Math.max(0, estimateMin),
       actualMin: Math.max(0, actualMin),
       date: date || '',
-      repeat,
-      status,
-      priority,
-      isInterrupt,
-      notes,
+      repeat: repeat,
+      status: status,
+      priority: priority,
+      isInterrupt: isInterrupt,
+      notes: notes,
       startedAt: (status === 'running') ? (new Date().toISOString()) : null,
       updatedAt: new Date().toISOString(),
     };
 
-    if (exists >= 0){
-      const prev = state.data.tasks[exists];
+    if (idx >= 0){
+      var prev = state.data.tasks[idx];
       if (prev.status === 'running' && base.status === 'running') base.startedAt = prev.startedAt;
-      state.data.tasks[exists] = { ...prev, ...base };
+      state.data.tasks[idx] = Object.assign({}, prev, base);
       toast('保存しました');
     } else {
-      state.data.tasks.push({ ...base, createdAt: new Date().toISOString() });
+      state.data.tasks.push(Object.assign({}, base, { createdAt: new Date().toISOString() }));
       toast('追加しました');
     }
 
@@ -1311,7 +1245,7 @@
   }
 
   async function toggleComplete(taskId){
-    const t = state.data.tasks.find(x=>x.id===taskId);
+    var t = state.data.tasks.find(function(x){ return x.id===taskId; });
     if (!t) return;
 
     if (t.status === 'running') stopTask(t.id, { setPaused: false });
@@ -1324,31 +1258,32 @@
 
   async function deleteTask(taskId){
     if (!confirm('このタスクを削除しますか？')) return;
-    state.data.tasks = state.data.tasks.filter(t=>t.id!==taskId);
+    state.data.tasks = state.data.tasks.filter(function(t){ return t.id!==taskId; });
     await persist();
     toast('削除しました');
     renderAll();
   }
 
-  function openProjectModal(projectId=null){
-    const p = projectId ? state.data.projects.find(x=>x.id===projectId) : null;
-    document.getElementById('project-id').value = p?.id || '';
-    document.getElementById('project-name').value = p?.name || '';
+  function openProjectModal(projectId){
+    projectId = projectId || null;
+    var p = projectId ? state.data.projects.find(function(x){ return x.id===projectId; }) : null;
+    document.getElementById('project-id').value = p ? p.id : '';
+    document.getElementById('project-name').value = p ? p.name : '';
     openModal('project-modal');
-    setTimeout(()=>document.getElementById('project-name').focus(), 50);
+    setTimeout(function(){ document.getElementById('project-name').focus(); }, 50);
   }
 
   async function saveProjectFromModal(){
-    const id = document.getElementById('project-id').value || uid();
-    const name = document.getElementById('project-name').value.trim();
+    var id = document.getElementById('project-id').value || uid();
+    var name = document.getElementById('project-name').value.trim();
     if (!name){ toast('プロジェクト名が必要です'); return; }
 
-    const dup = state.data.projects.find(p=>p.name===name && p.id!==id);
+    var dup = state.data.projects.find(function(p){ return p.name===name && p.id!==id; });
     if (dup){ toast('同名プロジェクトがあります'); return; }
 
-    const idx = state.data.projects.findIndex(p=>p.id===id);
+    var idx = state.data.projects.findIndex(function(p){ return p.id===id; });
     if (idx>=0) state.data.projects[idx].name = name;
-    else state.data.projects.push({ id, name });
+    else state.data.projects.push({ id: id, name: name });
 
     await persist();
     closeModal('project-modal');
@@ -1357,18 +1292,16 @@
   }
 
   /*********************
-   * 11) Export / Backup
+   * 12) Export / Backup
    *********************/
   function exportToCSV(){
-    const rows = [
-      ['id','name','project','section','estimateMin','actualMin','date','repeat','status','priority','isInterrupt','notes','createdAt','updatedAt','startedAt']
-    ];
-    for (const t of state.data.tasks){
+    var rows = [[ 'id','name','project','section','estimateMin','actualMin','date','repeat','status','priority','isInterrupt','notes','createdAt','updatedAt','startedAt' ]];
+    state.data.tasks.forEach(function(t){
       rows.push([
         t.id,
         t.name,
-        getProject(t.projectId)?.name || '',
-        getSection(t.sectionId)?.name || '',
+        (getProject(t.projectId) && getProject(t.projectId).name) ? getProject(t.projectId).name : '',
+        (getSection(t.sectionId) && getSection(t.sectionId).name) ? getSection(t.sectionId).name : '',
         t.estimateMin ?? 0,
         t.actualMin ?? 0,
         t.date || '',
@@ -1376,22 +1309,24 @@
         t.status || 'pending',
         t.priority ?? 3,
         t.isInterrupt ? 1 : 0,
-        (t.notes||'').replaceAll('\n','\\n'),
+        String(t.notes||'').replaceAll('\n','\\n'),
         t.createdAt || '',
         t.updatedAt || '',
         t.startedAt || ''
       ]);
-    }
+    });
 
-    const csv = rows.map(r => r.map(v => {
-      const s = String(v ?? '');
-      return (s.includes(',') || s.includes('"') || s.includes('\n')) ? `"${s.replaceAll('"','""')}"` : s;
-    }).join(',')).join('\n');
+    var csv = rows.map(function(r){
+      return r.map(function(v){
+        var s = String(v ?? '');
+        return (s.includes(',') || s.includes('"') || s.includes('\n')) ? '"' + s.replaceAll('"','""') + '"' : s;
+      }).join(',');
+    }).join('\n');
 
-    const blob = new Blob([csv], {type:'text/csv;charset=utf-8'});
-    const a = document.createElement('a');
+    var blob = new Blob([csv], {type:'text/csv;charset=utf-8'});
+    var a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `taskchute_${nowISODate()}.csv`;
+    a.download = 'taskchute_' + nowISODate() + '.csv';
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -1399,10 +1334,10 @@
   }
 
   function backupJSON(){
-    const blob = new Blob([JSON.stringify(state.data, null, 2)], {type:'application/json'});
-    const a = document.createElement('a');
+    var blob = new Blob([JSON.stringify(state.data, null, 2)], {type:'application/json'});
+    var a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `taskchute_backup_${nowISODate()}.json`;
+    a.download = 'taskchute_backup_' + nowISODate() + '.json';
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -1410,11 +1345,11 @@
   }
 
   async function restoreJSON(event){
-    const file = event.target.files?.[0];
+    var file = event.target.files && event.target.files[0];
     if (!file) return;
     try {
-      const text = await file.text();
-      const obj = JSON.parse(text);
+      var text = await file.text();
+      var obj = JSON.parse(text);
       state.data = normalizeData(obj);
       await persist();
       hydrateSelectors();
@@ -1435,16 +1370,15 @@
   }
 
   /*********************
-   * 12) Tests
+   * 13) Tests
    *********************/
   function assert(cond, msg){ if (!cond) throw new Error(msg || 'assertion failed'); }
 
   function runTests(){
     try {
-      const snapshot = JSON.parse(JSON.stringify(state.data));
-
+      var snapshot = JSON.parse(JSON.stringify(state.data));
       state.data.tasks = [];
-      const today = nowISODate();
+      var today = nowISODate();
 
       state.data.tasks.push({
         id: 't1', name: 'A', sectionId: 'morning', projectId: 'inbox', estimateMin: 10, actualMin: 0,
@@ -1464,16 +1398,17 @@
 
       assert(document.querySelector('[aria-label="start"]') !== null, 'start button should exist');
 
-      const evening = new Date();
+      var evening = new Date();
       evening.setHours(19,0,0,0);
       enforceEveningRule(evening);
-      const moved = state.data.tasks.find(x=>x.id==='t2');
+      var moved = state.data.tasks.find(function(x){ return x.id==='t2'; });
       assert(moved.status !== 'running', 'running should stop at evening');
       assert(moved.sectionId === 'forenoon', 'evening move should set forenoon');
       assert(moved.date === addDaysISO(today, 1), 'evening move should postpone +1 day');
 
+      // loop
       loopTask('t1');
-      const created = state.data.tasks.find(x=>x.name==='A' && x.id!=='t1' && x.status==='running');
+      var created = state.data.tasks.find(function(x){ return x.name==='A' && x.id!=='t1' && x.status==='running'; });
       assert(!!created, 'loop should create a new running task');
       assert(created.sectionId === 'forenoon', 'loop should set forenoon');
 
@@ -1484,19 +1419,19 @@
       toast('テストOK');
     } catch (e){
       console.error('Tests failed', e);
-      toast('テスト失敗: ' + (e?.message || e));
+      toast('テスト失敗: ' + (e && e.message ? e.message : e));
     }
   }
 
   /*********************
-   * 13) Boot + ticker
+   * 14) Boot + ticker
    *********************/
-  let runningInterval = null;
+  var runningInterval = null;
   function startTicker(){
     if (runningInterval) return;
-    runningInterval = setInterval(()=>{
+    runningInterval = setInterval(function(){
       enforceEveningRule(new Date());
-      const hasRunning = state.data.tasks.some(t=>t.status==='running');
+      var hasRunning = state.data.tasks.some(function(t){ return t.status==='running'; });
       if (hasRunning) renderAll();
     }, 30 * 1000);
   }
@@ -1505,11 +1440,11 @@
     await refreshAuthChip();
 
     // Supabase設定なしならローカルで動かす
-    if (!supabase){
-      const loadedLocal = await localAdapter.load();
+    if (!supabaseClient){
+      var loadedLocal = await localAdapter.load();
       if (loadedLocal) state.data = normalizeData(loadedLocal);
       else {
-        const today = nowISODate();
+        var today = nowISODate();
         state.data.tasks = [{
           id: uid(),
           name: '（例）今日の計画を立てる',
@@ -1538,18 +1473,15 @@
       return;
     }
 
-    // Supabase設定あり
-    const loaded = await storage.load();
+    var loaded = await storage.load();
     if (loaded) state.data = normalizeData(loaded);
     else {
-      // 初回: ローカルがあればそれを採用、なければサンプル作成
-      const local = await localAdapter.load();
+      var local = await localAdapter.load();
       if (local) {
         state.data = normalizeData(local);
-        // ログイン済みならクラウドへも保存しておく
         try { await storage.save(state.data); } catch {}
       } else {
-        const today = nowISODate();
+        var today2 = nowISODate();
         state.data.tasks = [{
           id: uid(),
           name: '（例）今日の計画を立てる',
@@ -1557,7 +1489,7 @@
           projectId: 'inbox',
           estimateMin: 15,
           actualMin: 0,
-          date: today,
+          date: today2,
           repeat: 'none',
           status: 'pending',
           priority: 3,
@@ -1577,18 +1509,55 @@
     renderAll();
     startTicker();
 
-    // Auth change -> cloud reload
-    supabaseClient.auth.onAuthStateChange(async () => {
+    supabaseClient.auth.onAuthStateChange(async function(){
       await refreshAuthChip();
-      // ログイン/ログアウトで表示を切り替え
-      const loaded2 = await storage.load();
+      var loaded2 = await storage.load();
       if (loaded2) state.data = normalizeData(loaded2);
       renderProjects();
       renderAll();
     });
   }
 
+  // ✅ HTMLのonclickから呼べるようにグローバル公開
+  window.toggleSidebar = toggleSidebar;
+  window.switchSidebarTab = switchSidebarTab;
+  window.openQuickSearch = openQuickSearch;
+  window.openAuthModal = openAuthModal;
+  window.closeModal = closeModal;
+
+  window.setDateRange = setDateRange;
+  window.setProjectFilter = setProjectFilter;
+
+  window.openTaskModal = openTaskModal;
+  window.saveTaskFromModal = saveTaskFromModal;
+  window.toggleComplete = toggleComplete;
+  window.deleteTask = deleteTask;
+
+  window.openProjectModal = openProjectModal;
+  window.saveProjectFromModal = saveProjectFromModal;
+
+  window.startTask = startTask;
+  window.pauseTask = pauseTask;
+  window.postponeTask = postponeTask;
+  window.loopTask = loopTask;
+
+  window.exportToCSV = exportToCSV;
+  window.backupJSON = backupJSON;
+  window.restoreJSON = restoreJSON;
+  window.clearData = clearData;
+
+  window.authSignIn = authSignIn;
+  window.authSignUp = authSignUp;
+  window.authSignOut = authSignOut;
+  window.migrateLocalToCloud = migrateLocalToCloud;
+
+  window.renderAll = renderAll;
+  window.runTests = runTests;
+
+  // start
   loadApp();
+
+})();
 </script>
 </body>
 </html>
