@@ -9,7 +9,7 @@
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
 
   <!-- Supabase JS (UMD) -->
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabaseClient.min.js"></script>
 
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+JP:wght@300;400;500;700&display=swap');
@@ -402,11 +402,11 @@
   /*********************
    * 0) Supabase config（ここを置換）
    *********************/
-  const SUPABASE_URL = 'https://opjgyixsmdbnmkwbxruy.supabase.co';
-  const SUPABASE_ANON_KEY = 'sb_publishable_hQMgGP5NXKYOZUYf8938Jw_5MzJMhWA';
+  supabaseClient_URL = 'https://opjgyixsmdbnmkwbxruy.supabase.co';
+  supabaseClient_ANON_KEY = 'sb_publishable_hQMgGP5NXKYOZUYf8938Jw_5MzJMhWA';
 
-  const supabase = (SUPABASE_URL.startsWith('http') && !SUPABASE_URL.includes('REPLACE_'))
-    ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+  supabaseClient = (SUPABASE_URL.startsWith('http') && !SUPABASE_URL.includes('REPLACE_'))
+    ? window.supabaseClient.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
     : null;
 
   /*********************
@@ -706,7 +706,7 @@
       return;
     }
 
-    const { data } = await supabase.auth.getSession();
+    const { data } = await supabaseClient.auth.getSession();
     const user = data?.session?.user;
     if (user){
       label.textContent = user.email || 'ログイン中';
@@ -723,7 +723,7 @@
     const pass = document.getElementById('auth-pass').value;
     if (!email || !pass){ toast('Email/Passwordを入力してください'); return; }
 
-    const { error } = await supabase.auth.signInWithPassword({ email, password: pass });
+    const { error } = await supabaseClient.auth.signInWithPassword({ email, password: pass });
     if (error){ toast('ログイン失敗: ' + error.message); return; }
 
     toast('ログインしました');
@@ -738,7 +738,7 @@
     const pass = document.getElementById('auth-pass').value;
     if (!email || !pass){ toast('Email/Passwordを入力してください'); return; }
 
-    const { error } = await supabase.auth.signUp({ email, password: pass });
+    const { error } = await supabaseClient.auth.signUp({ email, password: pass });
     if (error){ toast('登録失敗: ' + error.message); return; }
 
     toast('登録しました（そのままログイン済みのはずです）');
@@ -749,7 +749,7 @@
 
   async function authSignOut(){
     if (!supabase) return;
-    await supabase.auth.signOut();
+    await supabaseClient.auth.signOut();
     toast('ログアウトしました');
     await refreshAuthChip();
     // ローカルに残っているデータを表示
@@ -762,7 +762,7 @@
 
   async function migrateLocalToCloud(){
     if (!supabase) return;
-    const { data } = await supabase.auth.getSession();
+    const { data } = await supabaseClient.auth.getSession();
     const user = data?.session?.user;
     if (!user){ toast('先にログインしてください'); return; }
 
@@ -1578,7 +1578,7 @@
     startTicker();
 
     // Auth change -> cloud reload
-    supabase.auth.onAuthStateChange(async () => {
+    supabaseClient.auth.onAuthStateChange(async () => {
       await refreshAuthChip();
       // ログイン/ログアウトで表示を切り替え
       const loaded2 = await storage.load();
