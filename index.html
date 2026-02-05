@@ -1015,8 +1015,7 @@
   }
 
   function renderAll(){
-    enforceEveningRule(new Date());
-
+    
     var container = document.getElementById('task-container');
 
     var tasks = state.data.tasks.slice().sort(function(a,b){
@@ -1436,6 +1435,8 @@ renderAll();
   var runningInterval = null;
   function startTicker(){
     if (runningInterval) return;
+ // 起動時に1回だけ夜ルール適用
+    enforceEveningRule(new Date());
     runningInterval = setInterval(function(){
       enforceEveningRule(new Date());
       var hasRunning = state.data.tasks.some(function(t){ return t.status==='running'; });
