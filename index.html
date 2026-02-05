@@ -143,6 +143,7 @@
         </div>
 
         <div id="view-sync" class="hidden p-4 space-y-4">
+          <button onclick="openLocalBackups()" class="w-full bg-slate-100 text-slate-600 text-[10px] font-bold py-2 rounded-lg hover:bg-slate-200 transition">世代バックアップ（端末内）</button>
           <button onclick="exportToCSV()" class="w-full bg-slate-100 text-slate-600 text-[10px] font-bold py-2 rounded-lg hover:bg-slate-200 transition">CSV出力</button>
           <button onclick="backupJSON()" class="w-full bg-slate-100 text-slate-600 text-[10px] font-bold py-2 rounded-lg hover:bg-slate-200 transition">JSONバックアップ</button>
           <label class="block">
@@ -609,15 +610,244 @@
     return { meta: { version: 1, updatedAt: new Date().toISOString() }, projects: projects, sections: sections, tasks: tasks, ui: ui };
   }
 
-  async function persist(){
-    state.data.meta.updatedAt = new Date().toISOString();
-    try {
-      await storage.save(state.data);
-    } catch (e) {
-      console.error(e);
-      toast('保存に失敗（ログイン状態を確認）');
+/*********************
+ * 4.5) Persist Safety (B案)
+ *********************/
+
+// 世代バックアップ設定
+var BACKUP_PREFIX = 'taskchute_backup_';
+var MAX_BACKUPS = 10;
+
+// デバウンス＆ログイン直後クールダウン
+var PERSIST_DEBOUNCE_MS = 500;   // 300〜800msで調整OK
+var LOGIN_COOLDOWN_MS  = 1500;  // ログイン直後に保存しない
+
+var _persistTimer = null;
+var _cooldownUntil = 0;
+var _persistInFlight = false;
+var _dirtyWhileInFlight = false;
+
+function startLoginCooldown(){
+  _cooldownUntil = Date.now() + LOGIN_COOLDOWN_MS;
+}
+
+// サンプル/空データ判定（事故防止）
+function isSampleOrEmpty(){
+  var tasks = state.data.tasks || [];
+  if (tasks.length === 0) return true;
+  if (tasks.length === 1) {
+    var name = String(tasks[0].name || '');
+    if (name.includes('（例）') || name.includes('例') || name.toLowerCase().includes('sample')) return true;
+  }
+  return false;
+}
+
+// backup key生成: taskchute_backup_20260205_054437
+function makeBackupKey(ts){
+  ts = ts || new Date();
+  function pad(n){ return String(n).padStart(2,'0'); }
+  var y = ts.getFullYear();
+  var m = pad(ts.getMonth()+1);
+  var d = pad(ts.getDate());
+  var hh = pad(ts.getHours());
+  var mm = pad(ts.getMinutes());
+  var ss = pad(ts.getSeconds());
+  return BACKUP_PREFIX + y + m + d + '_' + hh + mm + ss;
+}
+
+function listBackupKeys(){
+  var keys = [];
+  for (var i=0;i<localStorage.length;i++){
+    var k = localStorage.key(i);
+    if (k && k.startsWith(BACKUP_PREFIX)) keys.push(k);
+  }
+  keys.sort().reverse(); // 新しい順
+  return keys;
+}
+
+function pruneBackups(){
+  var keys = listBackupKeys();
+  for (var i=MAX_BACKUPS; i<keys.length; i++){
+    localStorage.removeItem(keys[i]);
+  }
+}
+
+// 上書き前に「直前のメイン」を退避
+function backupBeforeOverwrite(){
+  var current = localStorage.getItem(STORAGE_KEY);
+  if (!current) return;
+  localStorage.setItem(makeBackupKey(new Date()), current);
+  pruneBackups();
+}
+
+// デバウンス入口：UIは即反映、保存はまとめる
+function schedulePersist(reason){
+  reason = reason || '';
+  if (_persistTimer) clearTimeout(_persistTimer);
+  _persistTimer = setTimeout(function(){
+    _persistTimer = null;
+    persistNow({reason: reason, fromDebounce:true});
+  }, PERSIST_DEBOUNCE_MS);
+}
+
+/** ★ここを persistNow の外へ移動（重要） */
+function parseUpdatedAt(data){
+  try {
+    var t = data && data.meta && data.meta.updatedAt ? Date.parse(data.meta.updatedAt) : 0;
+    return Number.isFinite(t) ? t : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** ★ここも persistNow の外へ移動（重要） */
+async function reconcileLocalAndCloud(){
+  var local = await localAdapter.load(); // STORAGE_KEY を読む
+  var cloud = null;
+
+  // クラウド読み込み（ログイン時のみ）
+  if (supabaseClient){
+    var s = await supabaseClient.auth.getSession();
+    var user = s && s.data && s.data.session && s.data.session.user;
+    if (user){
+      try {
+        cloud = await cloudAdapter.load();
+      } catch (e){
+        console.warn('cloud load failed', e);
+      }
     }
   }
+
+  var localNorm = local ? normalizeData(local) : null;
+  var cloudNorm = cloud ? normalizeData(cloud) : null;
+
+  var lt = parseUpdatedAt(localNorm);
+  var ct = parseUpdatedAt(cloudNorm);
+
+  // 採用（新しい方、同値ならクラウド優先）
+  if (cloudNorm && (!localNorm || ct >= lt)){
+    state.data = cloudNorm;
+
+    // ローカルへミラー（Local-firstの土台を作る）
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state.data));
+  } else if (localNorm){
+    state.data = localNorm;
+
+    // ログイン中ならクラウドへミラー
+    if (cloudNorm !== null){ // ログインしていた可能性が高い
+      try { await cloudAdapter.save(state.data); } catch {}
+    }
+  } else {
+    // どっちも無い → 何もしない（呼び出し側で初期サンプルを作る）
+  }
+}
+
+// 実保存（Local-first：ローカルが常に正、ログイン時だけクラウドへミラー）
+async function persistNow(meta){
+  meta = meta || {};
+  var now = Date.now();
+
+  // ログイン直後クールダウン中は保存しない（ただし後で1回まとめてやる）
+  if (now < _cooldownUntil){
+    schedulePersist('cooldown_retry');
+    return;
+  }
+
+  // サンプル/空データは保存停止（事故防止）
+  if (isSampleOrEmpty()){
+    // 明示的に「空保存OK」の操作だけ許可
+    if (!meta.allowEmpty) return;
+  }
+
+  // 同時実行抑止
+  if (_persistInFlight){
+    _dirtyWhileInFlight = true;
+    return;
+  }
+
+  _persistInFlight = true;
+  _dirtyWhileInFlight = false;
+
+  state.data.meta.updatedAt = new Date().toISOString();
+
+  try {
+    // ✅ 上書き前に世代バックアップ（ローカルのメインを退避）
+    backupBeforeOverwrite();
+
+    // ✅ 1) ローカルは常に保存（Local-first）
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state.data));
+
+    // ✅ 2) ログインしていればクラウドにもミラー保存
+    if (supabaseClient){
+      var s = await supabaseClient.auth.getSession();
+      var user = s && s.data && s.data.session && s.data.session.user;
+      if (user) {
+        await cloudAdapter.save(state.data);
+      }
+    }
+  } catch (e) {
+    console.error(e);
+    toast('保存に失敗（ログイン状態を確認）');
+  } finally {
+    _persistInFlight = false;
+    if (_dirtyWhileInFlight){
+      schedulePersist('dirty_while_in_flight');
+    }
+  }
+}
+
+// 復元（最低限）
+function restoreFromBackupKey(backupKey){
+  var json = localStorage.getItem(backupKey);
+  if (!json) throw new Error('Backup not found: ' + backupKey);
+
+  // メインへ戻す（=次回ロードも復旧）
+  localStorage.setItem(STORAGE_KEY, json);
+
+  var obj = null;
+  try { obj = JSON.parse(json); } catch { obj = null; }
+  if (!obj) throw new Error('Backup JSON parse failed');
+
+  state.data = normalizeData(obj);
+  hydrateSelectors();
+  renderProjects();
+  setDateRange(state.data.ui.dateRange || 'today', true);
+  renderAll();
+  toast('バックアップから復元しました');
+}
+
+function openLocalBackups(){
+  var keys = listBackupKeys();
+  if (!keys.length){ toast('バックアップがありません'); return; }
+
+  var chosen = prompt('復元するバックアップキーを選んで貼り付けてください:\n\n' + keys.join('\n'), keys[0]);
+  if (!chosen) return;
+
+  if (!confirm('このバックアップから復元します。\n現在の状態は上書きされます。\n\n' + chosen)) return;
+
+  try {
+    window.TaskchuteBackup.restoreFromBackupKey(chosen);
+  } catch (e){
+    console.error(e);
+    toast('復元に失敗しました');
+  }
+}
+window.openLocalBackups = openLocalBackups;
+
+// デバッグ公開（任意）
+window.TaskchuteBackup = {
+  listBackupKeys: listBackupKeys,
+  restoreFromBackupKey: restoreFromBackupKey,
+  schedulePersist: schedulePersist,
+  persistNow: persistNow,
+  startLoginCooldown: startLoginCooldown
+};
+
+async function persist(){
+  // 既存の await persist() 呼び出しを壊さないため関数は残す
+  // 実体はデバウンス保存に寄せる
+  schedulePersist('persist()');
+}
 
   /*********************
    * 5) UI base
@@ -751,6 +981,7 @@
 
     toast('ログインしました');
     await refreshAuthChip();
+    startLoginCooldown();
     await loadFromCloudThenRender();
     closeModal('auth-modal');
   }
@@ -766,6 +997,7 @@
 
     toast('登録しました');
     await refreshAuthChip();
+    startLoginCooldown();
     await loadFromCloudThenRender();
     closeModal('auth-modal');
   }
@@ -794,25 +1026,24 @@
     if (!local){ toast('移行するローカルデータがありません'); return; }
 
     state.data = normalizeData(local);
-    await persist();
+    await persistNow({ reason: 'migrateLocalToCloud', allowEmpty: true });
     toast('ローカル → クラウドへ移行しました');
     closeModal('auth-modal');
     renderProjects();
     renderAll();
   }
 
-  async function loadFromCloudThenRender(){
-    try {
-      var loaded = await cloudAdapter.load();
-      if (loaded) state.data = normalizeData(loaded);
-      renderProjects();
-      setDateRange(state.data.ui.dateRange || 'today', true);
-      renderAll();
-    } catch (e) {
-      console.error(e);
-      toast('クラウド読み込みに失敗しました');
-    }
+async function loadFromCloudThenRender(){
+  try {
+    await reconcileLocalAndCloud();
+    renderProjects();
+    setDateRange(state.data.ui.dateRange || 'today', true);
+    renderAll();
+  } catch (e) {
+    console.error(e);
+    toast('読み込みに失敗しました');
   }
+}
 
   /*********************
    * 8) Filters
@@ -1341,7 +1572,7 @@ setDateRange(state.data.ui.dateRange || 'today', true);
   async function deleteTask(taskId){
     if (!confirm('このタスクを削除しますか？')) return;
     state.data.tasks = state.data.tasks.filter(function(t){ return t.id!==taskId; });
-    await persist();
+    await persistNow({ reason: 'deleteTask', allowEmpty: true });
     toast('削除しました');
     renderAll();
   }
@@ -1453,7 +1684,7 @@ setDateRange(state.data.ui.dateRange || 'today', true);
       var text = await file.text();
       var obj = JSON.parse(text);
       state.data = normalizeData(obj);
-      await persist();
+      await persistNow({ reason: 'restoreJSON', allowEmpty: true });
       hydrateSelectors();
       renderProjects();
       renderAll();
@@ -1620,11 +1851,12 @@ setDateRange(state.data.ui.dateRange || 'today', true);
     startTicker();
 
     supabaseClient.auth.onAuthStateChange(async function(){
-      await refreshAuthChip();
-      var loaded2 = await storage.load();
-      if (loaded2) state.data = normalizeData(loaded2);
-      renderProjects();
-      renderAll();
+    startLoginCooldown();
+    await refreshAuthChip();
+    var loaded2 = await storage.load();
+    if (loaded2) state.data = normalizeData(loaded2);
+    renderProjects();
+    renderAll();
     });
   }
 
