@@ -202,7 +202,7 @@
         <button onclick="closeModal('task-modal')" class="text-slate-400 p-2 hover:bg-slate-200 rounded-full" aria-label="close"><i class="fas fa-times"></i></button>
       </div>
 
-      <div class="p-6 md:p-8 space-y-5 overflow-y-auto custom-scroll">
+      <div class="p-6 md:p-8 space-y-5 overflow-y-auto custom-scroll" id="task-modal-body">
         <input type="hidden" id="task-id" />
         <input type="hidden" id="task-is-interrupt" />
 
@@ -280,6 +280,29 @@
         <div class="flex gap-3 pt-2">
           <button onclick="saveTaskFromModal()" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-2xl">保存</button>
           <button onclick="closeModal('task-modal')" class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-3 rounded-2xl">キャンセル</button>
+        </div>
+
+        <!-- ✅ ここから: 一覧から移した操作（削除/先送り/ループ） -->
+        <div class="pt-6 mt-2 border-t space-y-3">
+          <p class="text-[10px] font-black text-slate-400 uppercase tracking-widest">操作</p>
+          <div class="grid grid-cols-2 gap-3">
+            <button id="modal-postpone-btn"
+              onclick="postponeTaskFromModal(1)"
+              class="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-3 rounded-2xl text-sm">
+              <i class="fas fa-forward mr-1"></i> 先送り（+1日）
+            </button>
+            <button id="modal-loop-btn"
+              onclick="loopTaskFromModal()"
+              class="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-3 rounded-2xl text-sm">
+              <i class="fas fa-rotate-right mr-1"></i> ループ
+            </button>
+          </div>
+          <button id="modal-delete-btn"
+            onclick="deleteTaskFromModal()"
+            class="w-full bg-red-50 hover:bg-red-100 text-red-700 font-black py-3 rounded-2xl text-sm">
+            <i class="fas fa-trash mr-1"></i> このタスクを削除
+          </button>
+          <p class="text-[11px] text-slate-500">※削除は取り消せません。必要なら先送りで逃がすのが安全です。</p>
         </div>
       </div>
     </div>
@@ -469,7 +492,11 @@
    * 2) Utils
    *********************/
   function nowISODate(){ return new Date().toISOString().slice(0,10); }
-  function uid(){ return (crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now().toString(36)+Math.random().toString(36).slice(2)); }
+  function uid(){
+  var c = (typeof crypto !== 'undefined') ? crypto : null;
+  return (c && c.randomUUID) ? c.randomUUID()
+   : (Date.now().toString(36) + Math.random().toString(36).slice(2));
+  }
 
   function addDaysISO(iso, days){
     var d = new Date(iso + 'T00:00:00');
@@ -745,10 +772,11 @@
 
     var local = await localAdapter.load();
     if (local) state.data = normalizeData(local);
+    
     renderProjects();
     setDateRange(state.data.ui.dateRange || 'today', true);
     renderAll();
-  }
+     }
 
   async function migrateLocalToCloud(){
     if (!supabaseClient) return;
@@ -847,25 +875,44 @@
   /*********************
    * 9) Running controls
    *********************/
+  function finalizeRunningIfNeeded(t){
+    if (!t) return 0;
+    if (t.status === 'running' && t.startedAt){
+      var add = elapsedMinSince(t.startedAt);
+      if (add > 0) t.actualMin = Math.max(0, Number(t.actualMin||0) + add);
+      t.startedAt = null;
+      return add;
+    }
+    return 0;
+  }
+
+  function setTaskStatus(t, nextStatus){
+    if (!t) return;
+    // running からの遷移は必ず精算してから
+    if (t.status === 'running' && nextStatus !== 'running'){
+    finalizeRunningIfNeeded(t);
+    }
+    t.status = nextStatus;
+    if (nextStatus === 'running' && !t.startedAt){
+      t.startedAt = new Date().toISOString();
+    }
+    if (nextStatus !== 'running'){
+      t.startedAt = null;
+    }
+    t.updatedAt = new Date().toISOString();
+  }
+  
   function stopTask(taskId, opts){
     opts = opts || {};
     var t = state.data.tasks.find(function(x){ return x.id===taskId; });
     if (!t) return;
 
-    if (t.status === 'running' && t.startedAt){
-      var add = elapsedMinSince(t.startedAt);
-      if (add > 0) t.actualMin = Math.max(0, Number(t.actualMin||0) + add);
-    }
-
-    t.startedAt = null;
-    if (opts.setPaused) t.status = 'paused';
-    elseToggle(t);
-
-    t.updatedAt = new Date().toISOString();
-  }
-
-  function elseToggle(t){
-    if (t.status === 'running') t.status = 'pending';
+     // ✅ 要件: 停止/中断は “経過を actualMin に加算 → startedAt=null → paused”
+　   // ただし既存利用もあるので opts で指定されたらそれに従う
+　  finalizeRunningIfNeeded(t);
+    if (opts.setPaused === true) setTaskStatus(t, 'paused');
+    else if (opts.setPaused === false) setTaskStatus(t, 'pending');
+    else setTaskStatus(t, 'paused');
   }
 
   async function startTask(taskId){
@@ -873,12 +920,10 @@
     if (!t) return;
 
     var running = state.data.tasks.find(function(x){ return x.status==='running' && x.id!==taskId; });
-    if (running) stopTask(running.id, { setPaused: false });
-
-    t.status = 'running';
-    t.startedAt = new Date().toISOString();
-    t.updatedAt = new Date().toISOString();
-
+    // ✅ 他の running がいたら “中断（paused）” に寄せる（実績精算も確実）
+   if (running) stopTask(running.id, { setPaused: true });
+ 　　setTaskStatus(t, 'running');
+    
     await persist();
     renderAll();
   }
@@ -894,7 +939,7 @@
     var t = state.data.tasks.find(function(x){ return x.id===taskId; });
     if (!t) return;
 
-    if (t.status === 'running') stopTask(t.id, { setPaused: false });
+    if (t.status === 'running') stopTask(t.id, { setPaused: true });
 
     var base = t.date ? t.date : nowISODate();
     t.date = addDaysISO(base, days);
@@ -912,12 +957,13 @@
 
     var runningTask = state.data.tasks.find(function(t){ return t.status==='running'; });
     if (!runningTask) return;
-
-    stopTask(runningTask.id, { setPaused: false });
+    
+    // ✅ 夜ルール：停止（＝中断）→ 翌日+1日 → 午前へ
+    stopTask(runningTask.id, { setPaused: true });
 
     var base = runningTask.date ? runningTask.date : nowISODate();
     runningTask.date = addDaysISO(base, 1);
-    runningTask.sectionId = 'forenoon';
+    runningTask.sectionId = 'morning';
     runningTask.updatedAt = new Date().toISOString();
     persist();
     toast('夜になったので停止 → 翌日午前に先送りしました');
@@ -927,7 +973,7 @@
     var t = state.data.tasks.find(function(x){ return x.id===taskId; });
     if (!t) return;
 
-    if (t.status === 'running') stopTask(t.id, { setPaused: false });
+    if (t.status === 'running') stopTask(t.id, { setPaused: true });
 
     t.status = 'completed';
     t.startedAt = null;
@@ -978,7 +1024,12 @@
   function recomputeTotals(){
     var visible = state.data.tasks.filter(isVisibleByFilters);
     var est = visible.reduce(function(a,t){ return a + (Number(t.estimateMin)||0); }, 0);
-    var act = visible.reduce(function(a,t){ return a + (Number(t.actualMin)||0); }, 0);
+    // ✅ 実績合計：表示中 actualMin の合計 + running の経過分（リアルタイム見え）
+    var act = visible.reduce(function(a,t){
+    var base = Number(t.actualMin)||0;
+    var extra = (t.status==='running' && t.startedAt) ? elapsedMinSince(t.startedAt) : 0;
+    return a + base + extra;
+    }, 0);
     document.getElementById('total-estimate').textContent = fmtMin(est);
     document.getElementById('total-actual').textContent = fmtMin(act);
 
@@ -1069,22 +1120,18 @@
 
       var list = document.createElement('div');
       list.className = 'space-y-6';
-
+      
+      // ✅ “タスクがなくても時間枠を表示” のため、sections順で必ず回す
       var sectionOrder = state.data.sections.map(function(s){ return s.id; });
-      var keys = Array.from(bySection.keys()).sort(function(a,b){
-        var ai = sectionOrder.indexOf(a);
-        var bi = sectionOrder.indexOf(b);
-        if (ai === -1 && bi === -1) return String(a).localeCompare(String(b));
-        if (ai === -1) return 1;
-        if (bi === -1) return -1;
-        return ai - bi;
-      });
-
-      keys.forEach(function(sid){
-        var sectionItems = bySection.get(sid);
+      sectionOrder.forEach(function(sid){
+        var sectionItems = bySection.get(sid) || [];
         var seName = (sid==='unknown') ? '（未分類）' : ((getSection(sid) && getSection(sid).name) ? getSection(sid).name : '（未分類）');
         var secEst = sectionItems.reduce(function(a,t){ return a + (Number(t.estimateMin)||0); }, 0);
-        var secAct = sectionItems.reduce(function(a,t){ return a + (Number(t.actualMin)||0); }, 0);
+        var secAct = sectionItems.reduce(function(a,t){
+        var base = Number(t.actualMin)||0;
+        var extra = (t.status==='running' && t.startedAt) ? elapsedMinSince(t.startedAt) : 0;
+        return a + base + extra;
+        }, 0);
         var secInterrupt = sectionItems.filter(function(t){ return !!t.isInterrupt; }).length;
 
         var header = document.createElement('div');
@@ -1098,21 +1145,30 @@
 
         var cards = document.createElement('div');
         cards.className = 'space-y-3';
-
+  // ✅ 空枠でも表示（軽いプレースホルダ）
+        if (!sectionItems.length){
+          var empty = document.createElement('div');
+          empty.className = 'bg-white/60 border border-dashed border-slate-200 rounded-2xl p-4 text-xs text-slate-400';
+          empty.textContent = 'タスクなし';
+          cards.appendChild(empty);
+        }
         sectionItems.forEach(function(t){
           var pj = (getProject(t.projectId) && getProject(t.projectId).name) ? getProject(t.projectId).name : '—';
           var elapsed = (t.status==='running') ? elapsedMinSince(t.startedAt) : 0;
 
           var card = document.createElement('div');
-          card.className = 'task-card bg-white border border-slate-100 rounded-3xl p-5 transition ' + statusClass(t);
-
+          card.className = 'task-card bg-white border border-slate-100 rounded-3xl p-5 transition cursor-pointer ' + statusClass(t);
+          // ✅ ペン廃止：カード本体クリックで詳細モーダル
+          card.onclick = function(){ openTaskModal(t.id); };
           card.innerHTML = '<div class="flex items-start justify-between gap-3">' +
             '<div class="min-w-0">' +
               '<div class="flex items-center gap-2 flex-wrap">' +
                 '<p class="font-bold text-slate-800 truncate">' + escapeHtml(t.name || '(無題)') + '</p>' +
                 (t.isInterrupt ? '<span class="text-[10px] font-black px-2 py-0.5 rounded-full bg-rose-100 text-rose-700">割り込み</span>' : '') +
                 priorityBadge(t.priority) +
-                (t.status==='running' ? '<span class="text-[10px] font-black px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">経過 ' + elapsed + 'm</span>' : '') +
+                 (t.status==='running'
+                  ? '<span data-elapsed-task-id="' + t.id + '" class="text-[10px] font-black px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">経過 ' + elapsed + 'm</span>'
+                   : '') +
               '</div>' +
               '<div class="mt-1 text-xs text-slate-500 flex flex-wrap gap-x-3 gap-y-1">' +
                 '<span><i class="fa-regular fa-folder-open"></i> ' + escapeHtml(pj) + '</span>' +
@@ -1123,17 +1179,14 @@
 
             '<div class="task-actions flex items-center gap-2">' +
               (t.status === 'running'
-                ? '<button onclick="pauseTask(\'' + t.id + '\')" class="p-2 rounded-xl border hover:bg-slate-50" title="停止" aria-label="pause"><i class="fas fa-pause text-amber-600"></i></button>'
-                : '<button onclick="startTask(\'' + t.id + '\')" class="p-2 rounded-xl border hover:bg-slate-50" title="再生" aria-label="start"><i class="fas fa-play text-blue-600"></i></button>'
+                ? '<button onclick="event.stopPropagation(); pauseTask(\'' + t.id + '\')" class="p-2 rounded-xl border hover:bg-slate-50" title="中断（停止）" aria-label="pause"><i class="fas fa-pause text-amber-600"></i></button>'
+                : '<button onclick="event.stopPropagation(); startTask(\'' + t.id + '\')" class="p-2 rounded-xl border hover:bg-slate-50" title="開始（再生）" aria-label="start"><i class="fas fa-play text-blue-600"></i></button>'
               ) +
 
-              '<button onclick="postponeTask(\'' + t.id + '\', 1)" class="p-2 rounded-xl border hover:bg-slate-50" title="先送り（+1日）" aria-label="postpone"><i class="fas fa-forward text-slate-600"></i></button>' +
-              '<button onclick="loopTask(\'' + t.id + '\')" class="p-2 rounded-xl border hover:bg-slate-50" title="ループ" aria-label="loop"><i class="fas fa-rotate-right text-purple-600"></i></button>' +
-              '<button onclick="toggleComplete(\'' + t.id + '\')" class="p-2 rounded-xl border hover:bg-slate-50" title="完了切替" aria-label="toggle complete">' +
-                '<i class="fas ' + (t.status==='completed' ? 'fa-rotate-left text-slate-500' : 'fa-check text-emerald-600') + '"></i>' +
-              '</button>' +
-              '<button onclick="openTaskModal(\'' + t.id + '\')" class="p-2 rounded-xl border hover:bg-slate-50" title="編集" aria-label="edit"><i class="fas fa-pen text-slate-600"></i></button>' +
-              '<button onclick="deleteTask(\'' + t.id + '\')" class="p-2 rounded-xl border hover:bg-slate-50" title="削除" aria-label="delete"><i class="fas fa-trash text-rose-600"></i></button>' +
+              // ✅ 一覧は最小構成：再生/停止 + 完了
+               '<button onclick="event.stopPropagation(); toggleComplete(\'' + t.id + '\')" class="p-2 rounded-xl border hover:bg-slate-50" title="完了" aria-label="toggle complete">' +
+               '<i class="fas ' + (t.status==='completed' ? 'fa-rotate-left text-slate-500' : 'fa-check text-emerald-600') + '"></i>' +
+             '</button>' +
             '</div>' +
           '</div>' +
 
@@ -1155,10 +1208,21 @@
       dateSection.appendChild(list);
       container.appendChild(dateSection);
     });
-
     recomputeTotals();
   }
+ 
+  function tickRunningUI(){
+  // running の経過表示だけ更新
+  state.data.tasks.forEach(function(t){
+    if (t.status !== 'running' || !t.startedAt) return;
+    var el = document.querySelector('[data-elapsed-task-id="'+ t.id +'"]');
+    if (!el) return;
+    el.textContent = '経過 ' + elapsedMinSince(t.startedAt) + 'm';
+  });
 
+    // ヘッダーの実績合計も更新（renderAllなしで）
+    recomputeTotals();
+  }
   /*********************
    * 11) CRUD
    *********************/
@@ -1200,8 +1264,9 @@
     var projectId = document.getElementById('task-project').value;
     var estimateMin = Number(document.getElementById('task-duration').value || 0);
     var dateRaw = document.getElementById('task-deadline').value || '';
-    // date が未指定なら「今日」を自動セット
-    var date = dateRaw || nowISODate();
+    // ✅ date は「入力された値をそのまま保存」
+    // （未設定にしたい場合は input を空にして保存する）
+    var date = dateRaw;
     var repeat = document.getElementById('task-repeat').value;
     var status = document.getElementById('task-status').value;
     var actualMin = Number(document.getElementById('task-actual').value || 0);
@@ -1232,32 +1297,37 @@
 
     if (idx >= 0){
       var prev = state.data.tasks[idx];
+      // ★追加：running → 非running に変えるなら、保存前に精算
+      if (prev.status === 'running' && base.status !== 'running') {
+       var add = elapsedMinSince(prev.startedAt);
+      base.actualMin = Math.max(0, Number(prev.actualMin || 0) + add);
+      base.startedAt = null;
+    }
       if (prev.status === 'running' && base.status === 'running') base.startedAt = prev.startedAt;
       state.data.tasks[idx] = Object.assign({}, prev, base);
       toast('保存しました');
     } else {
       state.data.tasks.push(Object.assign({}, base, { createdAt: new Date().toISOString() }));
       toast('追加しました');
-      // 「未設定」表示中なら自動で「今日」に切り替える
-      if (state.data.ui.dateRange === 'undated') {
-    state.data.ui.dateRange = 'today';
-    }
     }
 
     await persist();
-closeModal('task-modal');
+    closeModal('task-modal');
 setDateRange(state.data.ui.dateRange || 'today', true);
-renderAll();
   }
 
   async function toggleComplete(taskId){
     var t = state.data.tasks.find(function(x){ return x.id===taskId; });
     if (!t) return;
 
-    if (t.status === 'running') stopTask(t.id, { setPaused: false });
-
-    t.status = (t.status === 'completed') ? 'pending' : 'completed';
-    t.updatedAt = new Date().toISOString();
+    // ✅ 要件: 完了」を押すと running なら経過分を actualMin に加算してから completed
+    if (t.status === 'completed'){
+      // 既存の「戻す」は維持（pendingへ）
+      setTaskStatus(t, 'pending');
+    } else {
+      if (t.status === 'running') finalizeRunningIfNeeded(t);
+      setTaskStatus(t, 'completed');
+    }
     await persist();
     renderAll();
   }
@@ -1270,6 +1340,26 @@ renderAll();
     renderAll();
   }
 
+  // ✅ モーダル内操作（一覧から移動した分）
+  function getModalTaskId(){ return document.getElementById('task-id').value || null; }
+  async function deleteTaskFromModal(){
+    var id = getModalTaskId();
+    if (!id){ toast('保存後に削除できます'); return; }
+    await deleteTask(id);
+    closeModal('task-modal');
+  }
+  async function postponeTaskFromModal(days){
+    var id = getModalTaskId();
+    if (!id){ toast('保存後に先送りできます'); return; }
+    await postponeTask(id, days || 1);
+    closeModal('task-modal');
+  }
+  async function loopTaskFromModal(){
+    var id = getModalTaskId();
+    if (!id){ toast('保存後にループできます'); return; }
+    await loopTask(id);
+    closeModal('task-modal');
+  }
   function openProjectModal(projectId){
     projectId = projectId || null;
     var p = projectId ? state.data.projects.find(function(x){ return x.id===projectId; }) : null;
@@ -1403,13 +1493,18 @@ renderAll();
       renderAll();
 
       assert(document.querySelector('[aria-label="start"]') !== null, 'start button should exist');
-
+      // ✅ 実績合計に running の経過が加味される
+      var actualText = document.getElementById('total-actual').textContent;
+      // t2 は 5分経過（actualMin=0, startedAt=now-5min）なので 0h 05m が期待値
+      // ※ fmtMin は "0h 05m" 形式
+      assert(actualText.includes('0h 05m') || actualText.includes('0h 06m') || actualText.includes('0h 04m'), 'total-actual should include running elapsed');
+ 
       var evening = new Date();
       evening.setHours(19,0,0,0);
       enforceEveningRule(evening);
       var moved = state.data.tasks.find(function(x){ return x.id==='t2'; });
       assert(moved.status !== 'running', 'running should stop at evening');
-      assert(moved.sectionId === 'forenoon', 'evening move should set forenoon');
+      assert(moved.sectionId === 'morning', 'evening move should set morning');
       assert(moved.date === addDaysISO(today, 1), 'evening move should postpone +1 day');
 
       // loop
@@ -1433,16 +1528,17 @@ renderAll();
    * 14) Boot + ticker
    *********************/
   var runningInterval = null;
-  function startTicker(){
-    if (runningInterval) return;
- // 起動時に1回だけ夜ルール適用
+ function startTicker(){
+  if (runningInterval) return;
+  enforceEveningRule(new Date());
+  runningInterval = setInterval(function(){
     enforceEveningRule(new Date());
-    runningInterval = setInterval(function(){
-      enforceEveningRule(new Date());
-      var hasRunning = state.data.tasks.some(function(t){ return t.status==='running'; });
-      if (hasRunning) renderAll();
-    }, 30 * 1000);
-  }
+    var hasRunning = state.data.tasks.some(function(t){
+      return t.status === 'running';
+    });
+    if (hasRunning) tickRunningUI();
+  }, 30 * 1000);
+}
 
   async function loadApp(){
     await refreshAuthChip();
@@ -1548,6 +1644,9 @@ renderAll();
   window.pauseTask = pauseTask;
   window.postponeTask = postponeTask;
   window.loopTask = loopTask;
+  window.deleteTaskFromModal = deleteTaskFromModal;
+  window.postponeTaskFromModal = postponeTaskFromModal;
+  window.loopTaskFromModal = loopTaskFromModal;
 
   window.exportToCSV = exportToCSV;
   window.backupJSON = backupJSON;
