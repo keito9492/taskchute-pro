@@ -1898,7 +1898,10 @@ setDateRange(state.data.ui.dateRange || 'today', true);
 
   window.renderAll = renderAll;
   window.runTests = runTests;
-
+  
+  //デバック用コード
+  Window.supabaseClient = supabaseClient;
+  
   // start
   loadApp();
 
