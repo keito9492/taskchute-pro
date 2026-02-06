@@ -999,8 +999,8 @@ async function persist(){
     if (res.error){ toast('ログイン失敗: ' + res.error.message); return; }
 
     toast('ログインしました');
-    await refreshAuthChip();
     startLoginCooldown();
+    await refreshAuthChip();
     await loadFromCloudThenRender();
     closeModal('auth-modal');
   }
@@ -1015,8 +1015,8 @@ async function persist(){
     if (res.error){ toast('登録失敗: ' + res.error.message); return; }
 
     toast('登録しました');
-    await refreshAuthChip();
     startLoginCooldown();
+    await refreshAuthChip();
     await loadFromCloudThenRender();
     closeModal('auth-modal');
   }
@@ -1055,6 +1055,38 @@ async function persist(){
 async function loadFromCloudThenRender(){
   try {
     await reconcileLocalAndCloud();
+
+    // ✅ どちらにもデータが無かった場合の初期化（ここでだけ作る）
+    if (!state.data || !state.data.tasks || state.data.tasks.length === 0) {
+      var today = nowISODate();
+      state.data = normalizeData({
+        projects: [ { id: 'inbox', name: 'INBOX' } ],
+        sections: DEFAULT_SECTIONS,
+        tasks: [{
+          id: uid(),
+          name: '（例）今日の計画を立てる',
+          sectionId: 'morning',
+          projectId: 'inbox',
+          estimateMin: 15,
+          actualMin: 0,
+          date: today,
+          repeat: 'none',
+          status: 'pending',
+          priority: 3,
+          isInterrupt: false,
+          notes: '備考が必須です。ここに判断メモや条件を書きます。',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          startedAt: null,
+        }],
+        ui: { dateRange:'today', projectFilter:null }
+      });
+
+      // サンプルは isSampleOrEmpty() で通常保存されない想定だが、
+      // ローカルだけは持っておきたいなら allowEmpty:true を使う
+      await persistNow({ reason: 'init_sample', allowEmpty: true });
+    }
+    
     renderProjects();
     setDateRange(state.data.ui.dateRange || 'today', true);
     renderAll();
@@ -1833,49 +1865,27 @@ setDateRange(state.data.ui.dateRange || 'today', true);
       return;
     }
 
-    var loaded = await storage.load();
-    if (loaded) state.data = normalizeData(loaded);
-    else {
-      var local = await localAdapter.load();
-      if (local) {
-        state.data = normalizeData(local);
-        try { await storage.save(state.data); } catch {}
-      } else {
-        var today2 = nowISODate();
-        state.data.tasks = [{
-          id: uid(),
-          name: '（例）今日の計画を立てる',
-          sectionId: 'morning',
-          projectId: 'inbox',
-          estimateMin: 15,
-          actualMin: 0,
-          date: today2,
-          repeat: 'none',
-          status: 'pending',
-          priority: 3,
-          isInterrupt: false,
-          notes: '備考が必須です。ここに判断メモや条件を書きます。',
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          startedAt: null,
-        }];
-        await persist();
-      }
-    }
+  // ✅ Supabaseありの場合：起動時は reconcileLocalAndCloud() を唯一の入口にする
+  //    (Local/Cloud の newer 判定 → state.data 決定 → 必要に応じてミラー)
+    await loadFromCloudThenRender();
 
-    hydrateSelectors();
-    renderProjects();
-    setDateRange(state.data.ui.dateRange || 'today', true);
-    renderAll();
+ // loadFromCloudThenRender() 内で render までやっているのでここでは不要
     startTicker();
+  // ✅ 認証イベントでは「UI更新 + クールダウン + 必要なら reconcile」だけ
+  //    ※ここで storage.load() すると “ローカル優先→空保存→クラウド上書き” 事故が起きる
+    supabaseClient.auth.onAuthStateChange(async function(event){
+      startLoginCooldown();
+      await refreshAuthChip();
 
-    supabaseClient.auth.onAuthStateChange(async function(){
-    startLoginCooldown();
-    await refreshAuthChip();
-    var loaded2 = await storage.load();
-    if (loaded2) state.data = normalizeData(loaded2);
-    renderProjects();
-    renderAll();
+      // ログイン/サインアウト直後は data を “再判定” してから描画
+      // (ログイン時: クラウド優先 / サインアウト時: ローカルへフォールバック)
+      if (event === 'SIGNED_IN' || event === 'SIGNED_OUT' || event === 'TOKEN_REFRESHED') {
+        await loadFromCloudThenRender();
+      } else {
+        // それ以外はUIだけ更新で十分
+        renderProjects();
+       renderAll();
+      }
     });
   }
 
