@@ -397,24 +397,43 @@
 (function(){
   'use strict';
 
-  /*********************
-   * 0) Supabase config（ここを置換）
-   *********************/
-  // ✅ ここは必ず定義されるように var にしています（TDZ対策）
-  var SUPABASE_URL = 'https://opjgyixsmdbnmkwbxruy.supabase.co';
-  var SUPABASE_ANON_KEY = 'sb_publishable_hQMgGP5NXKYOZUYf8938Jw_5MzJMhWA';
+/*********************
+ * 0) Supabase config（ここを置換）
+ *********************/
+var SUPABASE_URL = 'https://opjgyixsmdbnmkwbxruy.supabase.co';
+var SUPABASE_ANON_KEY = 'sb_publishable_hQMgGP5NXKYOZUYf8938Jw_5MzJMhWA';
 
-  // ✅ supabase client（グローバルキャッシュ：二重読み込みでも落ちない）
-  var supabaseClient = window.__TASKCHUTE_SUPABASE_CLIENT || null;
-  try {
-    var canInit = (typeof SUPABASE_URL === 'string' && SUPABASE_URL.startsWith('http') && !SUPABASE_URL.includes('REPLACE_'));
-    if (!supabaseClient && canInit && window.supabase && typeof window.supabase.createClient === 'function') {
-      supabaseClient = window.__TASKCHUTE_SUPABASE_CLIENT = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-    }
-  } catch (e) {
-    console.error('Supabase init failed', e);
-    supabaseClient = null;
+// ✅ デバッグ用に必ず window へ「状態」を出す
+window.__TASKCHUTE_SUPABASE = window.__TASKCHUTE_SUPABASE || {};
+window.__TASKCHUTE_SUPABASE.url = SUPABASE_URL;
+window.__TASKCHUTE_SUPABASE.hasWindowSupabase = !!window.supabase;
+window.__TASKCHUTE_SUPABASE.hasCreateClient = !!(window.supabase && window.supabase.createClient);
+
+var supabaseClient = null;
+
+try {
+  if (!window.supabase || typeof window.supabase.createClient !== 'function') {
+    throw new Error('Supabase UMD not loaded or createClient missing');
   }
+
+  // ✅ 以前のクライアントがあれば再利用
+  supabaseClient = window.__TASKCHUTE_SUPABASE_CLIENT || null;
+
+  if (!supabaseClient) {
+    supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    window.__TASKCHUTE_SUPABASE_CLIENT = supabaseClient;  // ★必ず入れる
+  }
+
+  // ✅ Console から触れるように別名も公開（任意だけど便利）
+  window.supabaseClient = supabaseClient;
+
+  window.__TASKCHUTE_SUPABASE.ready = true;
+} catch (e) {
+  console.error('Supabase init failed:', e);
+  window.__TASKCHUTE_SUPABASE.ready = false;
+  window.__TASKCHUTE_SUPABASE.error = String(e && e.message ? e.message : e);
+  supabaseClient = null;
+}
 
   /*********************
    * 1) Storage adapters
@@ -1900,7 +1919,7 @@ setDateRange(state.data.ui.dateRange || 'today', true);
   window.runTests = runTests;
   
   //デバック用コード
-  Window.supabaseClient = supabaseClient;
+  window.supabaseClient = supabaseClient;
   
   // start
   loadApp();
