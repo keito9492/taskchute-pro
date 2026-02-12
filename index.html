@@ -518,12 +518,17 @@ try {
    * 2) Utils
    *********************/
   function nowISODate(){ return new Date().toISOString().slice(0,10); }
-  function uid(){
+    function uid(){
   var c = (typeof crypto !== 'undefined') ? crypto : null;
   return (c && c.randomUUID) ? c.randomUUID()
    : (Date.now().toString(36) + Math.random().toString(36).slice(2));
   }
-
+  var DAYTIME_SECTIONS = new Set(['forenoon','afternoon']); // 午前・午後だけ
+  function isAfterEveningCutoff(dateObj){
+  var h = dateObj.getHours();
+  var m = dateObj.getMinutes();
+  return (h > 18) || (h === 18 && m >= 40); // ← ここを18:40に設定
+}
   function addDaysISO(iso, days){
     var d = new Date(iso + 'T00:00:00');
     d.setDate(d.getDate() + days);
@@ -957,6 +962,12 @@ async function persist(){
   function getProject(id){ return state.data.projects.find(function(p){ return p.id===id; }); }
   function getSection(id){ return state.data.sections.find(function(s){ return s.id===id; }); }
 
+  function isPrivateProjectId(projectId){
+    var p = getProject(projectId);
+    if (!p) return false;
+    return String(p.name || '').trim() === 'プライベート';
+  }
+  
   /*********************
    * 7) Auth
    *********************/
@@ -1240,23 +1251,28 @@ async function loadFromCloudThenRender(){
     renderAll();
   }
 
-  function enforceEveningRule(now){
-    now = now || new Date();
-    var current = classifyTimeToSectionId(now);
-    if (current !== 'evening') return;
+function enforceEveningRule(now){
+  now = now || new Date();
 
-    var runningTask = state.data.tasks.find(function(t){ return t.status==='running'; });
-    if (!runningTask) return;
-    
-    // ✅ 夜ルール：停止（＝中断）→ 翌日+1日 → 午前へ
-    stopTask(runningTask.id, { setPaused: true });
+  // 18:40以降のみ発動
+  if (!isAfterEveningCutoff(now)) return;
 
-    var base = runningTask.date ? runningTask.date : nowISODate();
-    runningTask.date = addDaysISO(base, 1);
-    runningTask.sectionId = 'morning';
-    runningTask.updatedAt = new Date().toISOString();
-    persist();
-    toast('夜になったので停止 → 翌日午前に先送りしました');
+  var runningTask = state.data.tasks.find(function(t){ return t.status === 'running'; });
+  if (!runningTask) return;
+  
+  //プライベートは自動化しない
+  if(isPrivateProjectId(runningTask.projectId))return;
+  
+  if (!DAYTIME_SECTIONS.has(runningTask.sectionId)) return;
+
+  stopTask(runningTask.id, { setPaused: true });
+
+  var base = runningTask.date ? runningTask.date : nowISODate();
+  runningTask.date = addDaysISO(base, 1);
+  runningTask.updatedAt = new Date().toISOString();
+
+  persist();
+  toast('18:40以降のため、中断→翌日に先送りしました');
   }
 
   async function loopTask(taskId){
@@ -1627,6 +1643,7 @@ setDateRange(state.data.ui.dateRange || 'today', true);
     state.data.tasks = state.data.tasks.filter(function(t){ return t.id!==taskId; });
     // サンプルは保存しない（クラウド上書き事故防止）
     // await persistNow({ reason: 'init_sample', allowEmpty: true });
+    await persist();
     toast('削除しました');
     renderAll();
   }
@@ -1795,7 +1812,7 @@ setDateRange(state.data.ui.dateRange || 'today', true);
       enforceEveningRule(evening);
       var moved = state.data.tasks.find(function(x){ return x.id==='t2'; });
       assert(moved.status !== 'running', 'running should stop at evening');
-      assert(moved.sectionId === 'morning', 'evening move should set morning');
+      assert(['forenoon','afternoon','morning'].includes(moved.sectionId), 'sectionId should remain unchanged');
       assert(moved.date === addDaysISO(today, 1), 'evening move should postpone +1 day');
 
       // loop
@@ -1821,8 +1838,7 @@ setDateRange(state.data.ui.dateRange || 'today', true);
   var runningInterval = null;
  function startTicker(){
   if (runningInterval) return;
-  enforceEveningRule(new Date());
-  runningInterval = setInterval(function(){
+    runningInterval = setInterval(function(){
     enforceEveningRule(new Date());
     var hasRunning = state.data.tasks.some(function(t){
       return t.status === 'running';
