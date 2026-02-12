@@ -723,12 +723,14 @@ function parseUpdatedAt(data){
 async function reconcileLocalAndCloud(){
   var local = await localAdapter.load(); // STORAGE_KEY を読む
   var cloud = null;
+  var isAuthed = false;
 
   // クラウド読み込み（ログイン時のみ）
   if (supabaseClient){
     var s = await supabaseClient.auth.getSession();
     var user = s && s.data && s.data.session && s.data.session.user;
     if (user){
+      isAuthed = true;
       try {
         cloud = await cloudAdapter.load();
       } catch (e){
@@ -753,7 +755,7 @@ async function reconcileLocalAndCloud(){
     state.data = localNorm;
 
     // ログイン中ならクラウドへミラー
-    if (cloudNorm !== null){ // ログインしていた可能性が高い
+    if (isAuthed){
       try { await cloudAdapter.save(state.data); } catch {}
     }
   } else {
@@ -1623,7 +1625,8 @@ setDateRange(state.data.ui.dateRange || 'today', true);
   async function deleteTask(taskId){
     if (!confirm('このタスクを削除しますか？')) return;
     state.data.tasks = state.data.tasks.filter(function(t){ return t.id!==taskId; });
-    await persistNow({ reason: 'deleteTask', allowEmpty: true });
+    // サンプルは保存しない（クラウド上書き事故防止）
+    // await persistNow({ reason: 'init_sample', allowEmpty: true });
     toast('削除しました');
     renderAll();
   }
