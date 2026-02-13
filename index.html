@@ -674,7 +674,6 @@ function mergeTask(localT, cloudT){
 
 // 世代バックアップ設定
 var BACKUP_PREFIX = 'taskchute_backup_';
-var MAX_BACKUPS = 10;
 
 // デバウンス＆ログイン直後クールダウン
 var PERSIST_DEBOUNCE_MS = 500;   // 300〜800msで調整OK
@@ -724,19 +723,42 @@ function listBackupKeys(){
   return keys;
 }
 
-function pruneBackups(){
-  var keys = listBackupKeys();
-  for (var i=MAX_BACKUPS; i<keys.length; i++){
-    localStorage.removeItem(keys[i]);
+
+// バックアップ合計サイズ上限（目安：2MB）
+var MAX_BACKUP_TOTAL_BYTES = 2 * 1024 * 1024; // 2,097,152 bytes
+
+function estimateBytes(str){
+  // UTF-16 の概算（localStorageは実装差あるけど、概算としては十分）
+  return (str ? str.length : 0) * 2;
+}
+
+function pruneBackupsByTotalSize(){
+  var keys = listBackupKeys(); // 新しい順（あなたの実装：sort().reverse()）
+  var total = 0;
+
+  for (var i = 0; i < keys.length; i++){
+    var k = keys[i];
+    var v = localStorage.getItem(k) || '';
+    total += estimateBytes(v);
+
+    // 新しい方から足していって、上限を超えたら「古い方」を消す
+    if (total > MAX_BACKUP_TOTAL_BYTES){
+      // ここ以降は全部削除（i 以降はより古い）
+      for (var j = i; j < keys.length; j++){
+        localStorage.removeItem(keys[j]);
+      }
+      break;
+    }
   }
 }
 
-// 上書き前に「直前のメイン」を退避
+// 上書き前に「直前のメイン」を退避（中身は同じ、pruneだけ差し替え）
 function backupBeforeOverwrite(){
   var current = localStorage.getItem(STORAGE_KEY);
   if (!current) return;
+
   localStorage.setItem(makeBackupKey(new Date()), current);
-  pruneBackups();
+  pruneBackupsByTotalSize();
 }
 
 // デバウンス入口：UIは即反映、保存はまとめる
@@ -780,22 +802,30 @@ async function reconcileLocalAndCloud(){
   var local = await localAdapter.load();
   var cloud = null;
   var isAuthed = false;
-  var cloudLoadOk = false; // ★「クラウドに問い合わせた結果」が取れたか（失敗かどうか）
+  var cloudLoadOk = false;
+
+  // ✅ ローカルは常に正規化（supabaseの有無に依存しない）
+  var localNorm = local ? normalizeData(local) : null;
 
   if (supabaseClient){
     var s = await supabaseClient.auth.getSession();
     var user = s && s.data && s.data.session && s.data.session.user;
+
     if (user){
       isAuthed = true;
-      try { cloud = await cloudAdapter.load(); } catch(e){ console.warn('cloud load failed', e); }
-      cloudLoadOk = true; // ★try/catchの外で「問い合わせ自体はした」扱いにする
+      try {
+        cloud = await cloudAdapter.load();
+        cloudLoadOk = true;
+      } catch(e){
+        console.warn('cloud load failed', e);
+        cloudLoadOk = false;
+        cloud = null;
+      }
     }
   }
 
-  var localNorm = local ? normalizeData(local) : null;
   var cloudNorm = cloud ? normalizeData(cloud) : null;
-  
- // ★初回判定用に “両方空” の状態を戻す
+
   if (!localNorm && !cloudNorm){
     return { bothEmpty: true, isAuthed: isAuthed, cloudLoadOk: cloudLoadOk };
   }
@@ -803,16 +833,13 @@ async function reconcileLocalAndCloud(){
   var lt = computeDataTimeByTasks(localNorm);
   var ct = computeDataTimeByTasks(cloudNorm);
 
-  // projects/sections/ui は “新しい方” をベース（同値ならクラウド）
   var base = (cloudNorm && (!localNorm || ct >= lt)) ? cloudNorm : localNorm;
 
-  // tasks は id ごとにマージ
+  // tasks idごとマージ（現状の実装を活かす）
   var map = new Map();
-
   (localNorm ? localNorm.tasks : []).forEach(function(t){
     if (t && t.id) map.set(t.id, { local: t, cloud: null });
   });
-
   (cloudNorm ? cloudNorm.tasks : []).forEach(function(t){
     if (!t || !t.id) return;
     var cur = map.get(t.id) || { local: null, cloud: null };
@@ -826,7 +853,6 @@ async function reconcileLocalAndCloud(){
     if (merged) mergedTasks.push(merged);
   });
 
-  // state に反映（mergedTasks を使う）
   state.data = normalizeData({
     projects: base.projects,
     sections: base.sections,
@@ -835,15 +861,15 @@ async function reconcileLocalAndCloud(){
   });
   state.data.meta.updatedAt = new Date().toISOString();
 
-  // ローカルへミラー（Local-firstの土台）
+  // ローカルへミラー
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state.data));
 
-  // ログイン中はクラウドへミラー
-  if (isAuthed){
+  // ✅ クラウドへは「ログイン中 & クラウドロード成功」のときだけミラー
+  if (isAuthed && cloudLoadOk){
     try { await cloudAdapter.save(state.data); } catch(e){}
   }
-  // ★初回判定用の戻り値
- return { bothEmpty: false, isAuthed: isAuthed, cloudLoadOk: cloudLoadOk };
+
+  return { bothEmpty: false, isAuthed: isAuthed, cloudLoadOk: cloudLoadOk };
 }
 
 // 実保存（Local-first：ローカルが常に正、ログイン時だけクラウドへミラー）
@@ -1396,36 +1422,43 @@ function enforceEveningRule(now){
   }
 
   async function loopTask(taskId){
-    var t = state.data.tasks.find(function(x){ return x.id===taskId; });
-    if (!t) return;
+  var t = state.data.tasks.find(function(x){ return x.id===taskId; });
+  if (!t) return;
 
-    if (t.status === 'running') stopTask(t.id, { setPaused: true });
-
-    t.status = 'completed';
-    t.startedAt = null;
-    t.updatedAt = new Date().toISOString();
-
-    var baseDate = t.date ? t.date : nowISODate();
-    var nextDate = addDaysISO(baseDate, 1);
-
-    var newTask = JSON.parse(JSON.stringify(t));
-    newTask.id = uid();
-    newTask.date = nextDate;
-    newTask.sectionId = 'forenoon';
-    newTask.actualMin = 0;
-    newTask.status = 'running';
-    newTask.startedAt = new Date().toISOString();
-    newTask.createdAt = new Date().toISOString();
-    newTask.updatedAt = new Date().toISOString();
-
-    state.data.tasks.push(newTask);
-
-    await persist();
-    toast('ループ: 次回タスク（午前）を作成して開始しました');
-    renderAll();
+  // running中なら精算して止める
+  if (t.status === 'running') {
+    stopTask(t.id, { setPaused: true });
   }
 
-  /*********************
+  // 元タスクは完了状態にする（すでに完了ならそのまま）
+  if (t.status !== 'completed') {
+    setTaskStatus(t, 'completed');
+  } else {
+    t.updatedAt = new Date().toISOString();
+  }
+
+  // 翌日へ複製
+  var baseDate = t.date ? t.date : nowISODate();
+  var nextDate = addDaysISO(baseDate, 1);
+
+  var newTask = JSON.parse(JSON.stringify(t));
+  newTask.id = uid();
+  newTask.date = nextDate;
+  newTask.sectionId = t.sectionId || 'afternoon'; // ★同じ時間枠
+  newTask.actualMin = 0;
+  newTask.status = 'pending';                     // ★未実行
+  newTask.startedAt = null;                       // ★開始しない
+  newTask.createdAt = new Date().toISOString();
+  newTask.updatedAt = new Date().toISOString();
+
+  state.data.tasks.push(newTask);
+
+  await persist();
+  toast('ループ: 翌日に未実行タスクを複製しました');
+  renderAll();
+}
+
+/*********************
    * 10) Render
    *********************/
   function statusClass(task){
@@ -1608,6 +1641,12 @@ function enforceEveningRule(now){
                 ? '<button onclick="event.stopPropagation(); pauseTask(\'' + t.id + '\')" class="p-2 rounded-xl border hover:bg-slate-50" title="中断（停止）" aria-label="pause"><i class="fas fa-pause text-amber-600"></i></button>'
                 : '<button onclick="event.stopPropagation(); startTask(\'' + t.id + '\')" class="p-2 rounded-xl border hover:bg-slate-50" title="開始（再生）" aria-label="start"><i class="fas fa-play text-blue-600"></i></button>'
               ) +
+              (t.status === 'completed'
+               ? '<button onclick="event.stopPropagation(); loopTask(\'' + t.id + '\')" class="p-2 rounded-xl border hover:bg-slate-50" title="ループ（翌日に複製）" aria-label="loop">' +
+               '<i class="fas fa-rotate-right text-slate-600"></i>'+
+               '</button>'
+               : ''
+              ) +
 
               // ✅ 一覧は最小構成：再生/停止 + 完了
                '<button onclick="event.stopPropagation(); toggleComplete(\'' + t.id + '\')" class="p-2 rounded-xl border hover:bg-slate-50" title="完了" aria-label="toggle complete">' +
@@ -1717,17 +1756,19 @@ function enforceEveningRule(now){
       priority: priority,
       isInterrupt: isInterrupt,
       notes: notes,
-      startedAt: (status === 'running') ? (new Date().toISOString()) : null,
+      startedAt: null,
       updatedAt: new Date().toISOString(),
     };
 
     if (idx >= 0){
       var prev = state.data.tasks[idx];
       // ★追加：running → 非running に変えるなら、保存前に精算
-      if (prev.status === 'running' && base.status !== 'running') {
-       var add = elapsedMinSince(prev.startedAt);
-      base.actualMin = Math.max(0, Number(prev.actualMin || 0) + add);
-      base.startedAt = null;
+    if (prev.status === 'running' && base.status === 'running') {
+      base.startedAt = prev.startedAt;            // 維持
+    } else if (prev.status !== 'running' && base.status === 'running') {
+      base.startedAt = new Date().toISOString();  // runningへ遷移したので開始
+    } else {
+      base.startedAt = null;                      // running以外
     }
       if (prev.status === 'running' && base.status === 'running') base.startedAt = prev.startedAt;
       state.data.tasks[idx] = Object.assign({}, prev, base);
@@ -1943,10 +1984,10 @@ setDateRange(state.data.ui.dateRange || 'today', true);
     // loop
     await loopTask('t1');
     var created = state.data.tasks.find(function(x){
-      return x.name==='A' && x.id!=='t1' && x.status==='running';
+      return x.name==='A' && x.id!=='t1' && x.status==='pending';
     });
-    assert(!!created, 'loop should create a new running task');
-    assert(created.sectionId === 'forenoon', 'loop should set forenoon');
+    assert(!!created, 'loop should create a new pending task');
+    assert(created.sectionId === 'morning', 'loop should keep same section');
 
     toast('テストOK');
   } catch (e){
@@ -2076,10 +2117,7 @@ setDateRange(state.data.ui.dateRange || 'today', true);
 
   window.renderAll = renderAll;
   window.runTests = runTests;
-  
-  //デバック用コード
-  window.supabaseClient = supabaseClient;
-  
+    
   // ✅ ページ離脱時に最後の保存を試みる（無限再予約防止のため fromUnload:true）
  window.addEventListener('beforeunload', function(){
   // ローカルだけ保存（同期は次回起動時に reconcile で吸収）
