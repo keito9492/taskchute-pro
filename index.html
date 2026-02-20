@@ -75,10 +75,9 @@
     <div class="flex items-center gap-3">
       <div class="hidden sm:flex bg-slate-100 p-1 rounded-lg">
         <button onclick="setDateRange('today')" id="btn-today" class="view-btn px-4 py-1.5 text-xs font-bold rounded-md transition active">今日</button>
+        <button onclick="setDateRange('rolling7')" id="btn-rolling7" class="view-btn px-4 py-1.5 text-xs font-bold rounded-md transition text-slate-500">直近7日</button>
         <button onclick="setDateRange('week')" id="btn-week" class="view-btn px-4 py-1.5 text-xs font-bold rounded-md transition text-slate-500">今週</button>
         <button onclick="setDateRange('undated')" id="btn-undated" class="view-btn px-4 py-1.5 text-xs font-bold rounded-md transition text-slate-500">未設定</button>
-      </div>
-
       <button onclick="openQuickSearch()" class="p-2 hover:bg-slate-100 rounded-lg" aria-label="search">
         <i class="fas fa-magnifying-glass text-slate-600"></i>
       </button>
@@ -183,11 +182,11 @@
 
       <div class="flex-1 overflow-y-auto custom-scroll p-4 md:px-12 py-8 max-w-5xl mx-auto w-full">
         <div class="sm:hidden flex bg-slate-100 p-1 rounded-lg mb-5">
-          <button onclick="setDateRange('today')" id="btn-today-m" class="view-btn w-1/3 px-2 py-1.5 text-xs font-bold rounded-md transition active">今日</button>
-          <button onclick="setDateRange('week')" id="btn-week-m" class="view-btn w-1/3 px-2 py-1.5 text-xs font-bold rounded-md transition text-slate-500">今週</button>
-          <button onclick="setDateRange('undated')" id="btn-undated-m" class="view-btn w-1/3 px-2 py-1.5 text-xs font-bold rounded-md transition text-slate-500">未設定</button>
+          <button onclick="setDateRange('today')" id="btn-today-m" class="view-btn w-1/4 px-2 py-1.5 text-xs font-bold rounded-md transition active">今日</button>
+          <button onclick="setDateRange('rolling7')" id="btn-rolling7-m" class="view-btn w-1/4 px-2 py-1.5 text-xs font-bold rounded-md transition text-slate-500">直近7日</button>
+          <button onclick="setDateRange('week')" id="btn-week-m" class="view-btn w-1/4 px-2 py-1.5 text-xs font-bold rounded-md transition text-slate-500">今週</button>
+          <button onclick="setDateRange('undated')" id="btn-undated-m" class="view-btn w-1/4 px-2 py-1.5 text-xs font-bold rounded-md transition text-slate-500">未設定</button>
         </div>
-
         <button onclick="openTaskModal(null, true)" class="w-full mb-8 py-4 bg-white border-2 border-dashed border-rose-200 text-rose-500 rounded-2xl text-xs font-black tracking-widest hover:bg-rose-50 transition flex items-center justify-center gap-2 shadow-sm">
           <i class="fas fa-bolt"></i> 割り込みタスクを追加
         </button>
@@ -400,7 +399,7 @@
   /*********************
    * App version
    *********************/
-  var APP_VERSION = '1.0.0'; // ← ここをリリースごとに更新
+  var APP_VERSION = '1.1.0'; // ← ここをリリースごとに更新
 
   function setAppVersionUI(){
     var el = document.getElementById('app-version');
@@ -1271,7 +1270,7 @@ async function loadFromCloudThenRender(){
   function setDateRange(range, skipPersist){
     state.data.ui.dateRange = range;
 
-    ['today','week','undated'].forEach(function(k){
+    ['today','rolling7','week','undated'].forEach(function(k){
       var btn = document.getElementById('btn-'+k);
       var btnm = document.getElementById('btn-'+k+'-m');
       if (btn){ btn.classList.toggle('active', k===range); btn.classList.toggle('text-slate-500', k!==range); }
@@ -1299,11 +1298,25 @@ async function loadFromCloudThenRender(){
     var sunday = new Date(monday); sunday.setDate(monday.getDate() + 6); sunday.setHours(23,59,59,999);
     return d >= monday && d <= sunday;
   }
+  
+  // 今日〜7日先まで（rolling 7 days）
+  function inRolling7(dateStr){
+    if (!dateStr) return false;
+    var d = new Date(dateStr + 'T00:00:00');
+    var start = new Date();
+    start.setHours(0,0,0,0);
+    var end = new Date(start);
+    end.setDate(start.getDate() + 7);
+    end.setHours(23,59,59,999);
+    return d >= start && d <= end;
+  }
+
 
   function matchesDateRange(task){
     var r = state.data.ui.dateRange;
     if (r === 'undated') return !task.date;
     if (r === 'today') return task.date === nowISODate();
+    if (r === 'rolling7') return inRolling7(task.date);
     if (r === 'week') return inWeek(task.date);
     return true;
   }
