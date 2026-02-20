@@ -79,7 +79,8 @@
         <button onclick="setDateRange('week')" id="btn-week" class="view-btn px-4 py-1.5 text-xs font-bold rounded-md transition text-slate-500">今週</button>
         <button onclick="setDateRange('month')" id="btn-month" class="view-btn px-4 py-1.5 text-xs font-bold rounded-md transition text-slate-500">今月</button>
         <button onclick="setDateRange('undated')" id="btn-undated" class="view-btn px-4 py-1.5 text-xs font-bold rounded-md transition text-slate-500">未設定</button>
-      <button onclick="openQuickSearch()" class="p-2 hover:bg-slate-100 rounded-lg" aria-label="search">
+      　<div>
+        <button onclick="openQuickSearch()" class="p-2 hover:bg-slate-100 rounded-lg" aria-label="search">
         <i class="fas fa-magnifying-glass text-slate-600"></i>
       </button>
 
@@ -183,11 +184,11 @@
 
       <div class="flex-1 overflow-y-auto custom-scroll p-4 md:px-12 py-8 max-w-5xl mx-auto w-full">
         <div class="sm:hidden flex bg-slate-100 p-1 rounded-lg mb-5">
-          <button onclick="setDateRange('today')" id="btn-today-m" class="view-btn w-1/4 px-2 py-1.5 text-xs font-bold rounded-md transition active">今日</button>
-          <button onclick="setDateRange('rolling7')" id="btn-rolling7-m" class="view-btn w-1/4 px-2 py-1.5 text-xs font-bold rounded-md transition text-slate-500">直近7日</button>
-          <button onclick="setDateRange('week')" id="btn-week-m" class="view-btn w-1/4 px-2 py-1.5 text-xs font-bold rounded-md transition text-slate-500">今週</button>
-          <button onclick="setDateRange('month')" id="btn-month-m" class="view-btn w-1/5 px-2 py-1.5 text-xs font-bold rounded-md transition text-slate-500">今月</button>
-          <button onclick="setDateRange('undated')" id="btn-undated-m" class="view-btn w-1/4 px-2 py-1.5 text-xs font-bold rounded-md transition text-slate-500">未設定</button>
+          <button onclick="setDateRange('today')" id="btn-today-m" class="view-btn flex-1 px-2 py-1.5 text-xs font-bold rounded-md transition active">今日</button>
+          <button onclick="setDateRange('rolling7')" id="btn-rolling7-m" class="view-btn flex-1 px-2 py-1.5 text-xs font-bold rounded-md transition text-slate-500">直近7日</button>
+          <button onclick="setDateRange('week')" id="btn-week-m" class="view-btn flex-1 px-2 py-1.5 text-xs font-bold rounded-md transition text-slate-500">今週</button>
+          <button onclick="setDateRange('month')" id="btn-month-m" class="view-btn flex-1 px-2 py-1.5 text-xs font-bold rounded-md transition text-slate-500">今月</button>
+          <button onclick="setDateRange('undated')" id="btn-undated-m" class="view-btn flex-1 px-2 py-1.5 text-xs font-bold rounded-md transition text-slate-500">未設定</button>
         </div>
         <button onclick="openTaskModal(null, true)" class="w-full mb-8 py-4 bg-white border-2 border-dashed border-rose-200 text-rose-500 rounded-2xl text-xs font-black tracking-widest hover:bg-rose-50 transition flex items-center justify-center gap-2 shadow-sm">
           <i class="fas fa-bolt"></i> 割り込みタスクを追加
@@ -401,7 +402,7 @@
   /*********************
    * App version
    *********************/
-  var APP_VERSION = '1.2.0'; // ← ここをリリースごとに更新
+  var APP_VERSION = '1.2.1'; // ← ここをリリースごとに更新
 
   function setAppVersionUI(){
     var el = document.getElementById('app-version');
@@ -1492,7 +1493,7 @@ function enforceEveningRule(now){
   renderAll();
 }
 
-/*********************
+ /*********************
    * 10) Render
    *********************/
   function statusClass(task){
@@ -1514,6 +1515,56 @@ function enforceEveningRule(now){
     return '<span class="text-[10px] font-bold px-2 py-0.5 rounded-full ' + tup[1] + '">' + tup[0] + '</span>';
   }
 
+  function buildTaskCard(t){
+  var pj = (getProject(t.projectId) && getProject(t.projectId).name) ? getProject(t.projectId).name : '—';
+  var elapsed = (t.status==='running') ? elapsedMinSince(t.startedAt) : 0;
+
+  var card = document.createElement('div');
+  card.className = 'task-card bg-white border border-slate-100 rounded-3xl p-5 transition cursor-pointer ' + statusClass(t);
+  card.onclick = function(){ openTaskModal(t.id); };
+
+  card.innerHTML =
+    '<div class="flex items-start justify-between gap-3">' +
+      '<div class="min-w-0">' +
+        '<div class="flex items-center gap-2 flex-wrap">' +
+          '<p class="font-bold text-slate-800 truncate">' + escapeHtml(t.name || '(無題)') + '</p>' +
+          (t.isInterrupt ? '<span class="text-[10px] font-black px-2 py-0.5 rounded-full bg-rose-100 text-rose-700">割り込み</span>' : '') +
+          priorityBadge(t.priority) +
+          (t.status==='running'
+            ? '<span data-elapsed-task-id="' + t.id + '" class="text-[10px] font-black px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">経過 ' + elapsed + 'm</span>'
+            : '') +
+        '</div>' +
+        '<div class="mt-1 text-xs text-slate-500 flex flex-wrap gap-x-3 gap-y-1">' +
+          '<span><i class="fa-regular fa-folder-open"></i> ' + escapeHtml(pj) + '</span>' +
+          '<span><i class="fa-regular fa-hourglass"></i> 見積 ' + fmtMin(t.estimateMin) + '</span>' +
+          '<span><i class="fa-regular fa-circle-check"></i> 実績 ' + fmtMin(t.actualMin) + '</span>' +
+        '</div>' +
+      '</div>' +
+
+      '<div class="task-actions flex items-center gap-2">' +
+        (t.status === 'running'
+          ? '<button onclick="event.stopPropagation(); pauseTask(\'' + t.id + '\')" class="p-2 rounded-xl border hover:bg-slate-50" title="中断（停止）" aria-label="pause"><i class="fas fa-pause text-amber-600"></i></button>'
+          : '<button onclick="event.stopPropagation(); startTask(\'' + t.id + '\')" class="p-2 rounded-xl border hover:bg-slate-50" title="開始（再生）" aria-label="start"><i class="fas fa-play text-blue-600"></i></button>'
+        ) +
+        (t.status === 'completed'
+          ? '<button onclick="event.stopPropagation(); loopTask(\'' + t.id + '\')" class="p-2 rounded-xl border hover:bg-slate-50" title="ループ（翌日に複製）" aria-label="loop">' +
+              '<i class="fas fa-rotate-right text-slate-600"></i>' +
+            '</button>'
+          : ''
+        ) +
+        '<button onclick="event.stopPropagation(); toggleComplete(\'' + t.id + '\')" class="p-2 rounded-xl border hover:bg-slate-50" title="完了" aria-label="toggle complete">' +
+          '<i class="fas ' + (t.status==='completed' ? 'fa-rotate-left text-slate-500' : 'fa-check text-emerald-600') + '"></i>' +
+        '</button>' +
+      '</div>' +
+    '</div>' +
+
+    '<div class="mt-4 bg-slate-50 border border-slate-100 rounded-2xl p-3">' +
+      '<p class="text-xs text-slate-700 whitespace-pre-wrap">' + escapeHtml(t.notes || '') + '</p>' +
+    '</div>';
+
+    return card;
+  }
+  
   function recomputeTotals(){
     var visible = state.data.tasks.filter(isVisibleByFilters);
     var est = visible.reduce(function(a,t){ return a + (Number(t.estimateMin)||0); }, 0);
@@ -1611,98 +1662,69 @@ function enforceEveningRule(now){
         bySection.get(sid).push(t);
       });
 
-      var list = document.createElement('div');
-      list.className = 'space-y-6';
-      
-      // ✅ “タスクがなくても時間枠を表示” のため、sections順で必ず回す
-      var sectionOrder = state.data.sections.map(function(s){ return s.id; });
-      sectionOrder.forEach(function(sid){
-        var sectionItems = bySection.get(sid) || [];
-        var seName = (sid==='unknown') ? '（未分類）' : ((getSection(sid) && getSection(sid).name) ? getSection(sid).name : '（未分類）');
-        var secEst = sectionItems.reduce(function(a,t){ return a + (Number(t.estimateMin)||0); }, 0);
-        var secAct = sectionItems.reduce(function(a,t){
-        var base = Number(t.actualMin)||0;
-        var extra = (t.status==='running' && t.startedAt) ? elapsedMinSince(t.startedAt) : 0;
-        return a + base + extra;
-        }, 0);
-        var secInterrupt = sectionItems.filter(function(t){ return !!t.isInterrupt; }).length;
+     var list = document.createElement('div');
+list.className = 'space-y-6';
 
-        var header = document.createElement('div');
-        header.className = 'flex items-center justify-between px-1';
-        header.innerHTML = '<div class="flex items-center gap-2">' +
-          '<span class="text-xs font-black text-slate-700">' + escapeHtml(seName) + '</span>' +
-          '<span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">' + sectionItems.length + '件</span>' +
-          (secInterrupt ? '<span class="text-[10px] font-black px-2 py-0.5 rounded-full bg-rose-100 text-rose-700">割り込み ' + secInterrupt + '</span>' : '') +
-          '</div>' +
-          '<div class="text-[11px] text-slate-500">見積 ' + fmtMin(secEst) + ' / 実績 ' + fmtMin(secAct) + '</div>';
+var isMonthView = (state.data.ui.dateRange === 'month');
 
-        var cards = document.createElement('div');
-        cards.className = 'space-y-3';
-  // ✅ 空枠でも表示（軽いプレースホルダ）
-        if (!sectionItems.length){
-          var empty = document.createElement('div');
-          empty.className = 'bg-white/60 border border-dashed border-slate-200 rounded-2xl p-4 text-xs text-slate-400';
-          empty.textContent = 'タスクなし';
-          cards.appendChild(empty);
-        }
-        sectionItems.forEach(function(t){
-          var pj = (getProject(t.projectId) && getProject(t.projectId).name) ? getProject(t.projectId).name : '—';
-          var elapsed = (t.status==='running') ? elapsedMinSince(t.startedAt) : 0;
+if (isMonthView) {
+  // monthビュー：日付ごとに「カードだけ」並べる（セクション見出しは出さない）
+  var cards = document.createElement('div');
+  cards.className = 'space-y-3';
 
-          var card = document.createElement('div');
-          card.className = 'task-card bg-white border border-slate-100 rounded-3xl p-5 transition cursor-pointer ' + statusClass(t);
-          // ✅ ペン廃止：カード本体クリックで詳細モーダル
-          card.onclick = function(){ openTaskModal(t.id); };
-          card.innerHTML = '<div class="flex items-start justify-between gap-3">' +
-            '<div class="min-w-0">' +
-              '<div class="flex items-center gap-2 flex-wrap">' +
-                '<p class="font-bold text-slate-800 truncate">' + escapeHtml(t.name || '(無題)') + '</p>' +
-                (t.isInterrupt ? '<span class="text-[10px] font-black px-2 py-0.5 rounded-full bg-rose-100 text-rose-700">割り込み</span>' : '') +
-                priorityBadge(t.priority) +
-                 (t.status==='running'
-                  ? '<span data-elapsed-task-id="' + t.id + '" class="text-[10px] font-black px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">経過 ' + elapsed + 'm</span>'
-                   : '') +
-              '</div>' +
-              '<div class="mt-1 text-xs text-slate-500 flex flex-wrap gap-x-3 gap-y-1">' +
-                '<span><i class="fa-regular fa-folder-open"></i> ' + escapeHtml(pj) + '</span>' +
-                '<span><i class="fa-regular fa-hourglass"></i> 見積 ' + fmtMin(t.estimateMin) + '</span>' +
-                '<span><i class="fa-regular fa-circle-check"></i> 実績 ' + fmtMin(t.actualMin) + '</span>' +
-              '</div>' +
-            '</div>' +
+  dateItems.forEach(function(t){
+    cards.appendChild(buildTaskCard(t));
+  });
 
-            '<div class="task-actions flex items-center gap-2">' +
-              (t.status === 'running'
-                ? '<button onclick="event.stopPropagation(); pauseTask(\'' + t.id + '\')" class="p-2 rounded-xl border hover:bg-slate-50" title="中断（停止）" aria-label="pause"><i class="fas fa-pause text-amber-600"></i></button>'
-                : '<button onclick="event.stopPropagation(); startTask(\'' + t.id + '\')" class="p-2 rounded-xl border hover:bg-slate-50" title="開始（再生）" aria-label="start"><i class="fas fa-play text-blue-600"></i></button>'
-              ) +
-              (t.status === 'completed'
-               ? '<button onclick="event.stopPropagation(); loopTask(\'' + t.id + '\')" class="p-2 rounded-xl border hover:bg-slate-50" title="ループ（翌日に複製）" aria-label="loop">' +
-               '<i class="fas fa-rotate-right text-slate-600"></i>'+
-               '</button>'
-               : ''
-              ) +
+  list.appendChild(cards);
 
-              // ✅ 一覧は最小構成：再生/停止 + 完了
-               '<button onclick="event.stopPropagation(); toggleComplete(\'' + t.id + '\')" class="p-2 rounded-xl border hover:bg-slate-50" title="完了" aria-label="toggle complete">' +
-               '<i class="fas ' + (t.status==='completed' ? 'fa-rotate-left text-slate-500' : 'fa-check text-emerald-600') + '"></i>' +
-             '</button>' +
-            '</div>' +
-          '</div>' +
+} else {
+  
+  // 通常ビュー：セクション見出し＋カード（buildTaskCardを利用）
+  var sectionOrder = state.data.sections.map(function(s){ return s.id; });
 
-          '<div class="mt-4 bg-slate-50 border border-slate-100 rounded-2xl p-3">' +
-            '<p class="text-xs text-slate-700 whitespace-pre-wrap">' + escapeHtml(t.notes || '') + '</p>' +
-          '</div>';
+  sectionOrder.forEach(function(sid){
+    var sectionItems = bySection.get(sid) || [];
+    var seName = (sid==='unknown') ? '（未分類）' : ((getSection(sid) && getSection(sid).name) ? getSection(sid).name : '（未分類）');
+    var secEst = sectionItems.reduce(function(a,t){ return a + (Number(t.estimateMin)||0); }, 0);
+    var secAct = sectionItems.reduce(function(a,t){
+      var base = Number(t.actualMin)||0;
+      var extra = (t.status==='running' && t.startedAt) ? elapsedMinSince(t.startedAt) : 0;
+      return a + base + extra;
+    }, 0);
+    var secInterrupt = sectionItems.filter(function(t){ return !!t.isInterrupt; }).length;
 
-          cards.appendChild(card);
-        });
+    var header = document.createElement('div');
+    header.className = 'flex items-center justify-between px-1';
+    header.innerHTML = '<div class="flex items-center gap-2">' +
+      '<span class="text-xs font-black text-slate-700">' + escapeHtml(seName) + '</span>' +
+      '<span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">' + sectionItems.length + '件</span>' +
+      (secInterrupt ? '<span class="text-[10px] font-black px-2 py-0.5 rounded-full bg-rose-100 text-rose-700">割り込み ' + secInterrupt + '</span>' : '') +
+      '</div>' +
+      '<div class="text-[11px] text-slate-500">見積 ' + fmtMin(secEst) + ' / 実績 ' + fmtMin(secAct) + '</div>';
 
-        var block = document.createElement('div');
-        block.className = 'space-y-3';
-        block.appendChild(header);
-        block.appendChild(cards);
-        list.appendChild(block);
-      });
+    var cards = document.createElement('div');
+    cards.className = 'space-y-3';
 
+    // 空枠プレースホルダは通常ビューのみ
+    if (!sectionItems.length){
+      var empty = document.createElement('div');
+      empty.className = 'bg-white/60 border border-dashed border-slate-200 rounded-2xl p-4 text-xs text-slate-400';
+      empty.textContent = 'タスクなし';
+      cards.appendChild(empty);
+    }
+
+    sectionItems.forEach(function(t){
+      cards.appendChild(buildTaskCard(t));
+    });
+
+    var block = document.createElement('div');
+    block.className = 'space-y-3';
+    block.appendChild(header);
+    block.appendChild(cards);
+    list.appendChild(block);
+  });
+}    
       dateSection.appendChild(dateHeader);
       dateSection.appendChild(list);
       container.appendChild(dateSection);
@@ -1796,16 +1818,16 @@ function enforceEveningRule(now){
 
     if (idx >= 0){
       var prev = state.data.tasks[idx];
-      // ★追加：running → 非running に変えるなら、保存前に精算
-    if (prev.status === 'running' && base.status === 'running') {
-      base.startedAt = prev.startedAt;            // 維持
-    } else if (prev.status !== 'running' && base.status === 'running') {
-      base.startedAt = new Date().toISOString();  // runningへ遷移したので開始
-    } else {
-      base.startedAt = null;                      // running以外
-    }
-      if (prev.status === 'running' && base.status === 'running') base.startedAt = prev.startedAt;
-      state.data.tasks[idx] = Object.assign({}, prev, base);
+      // startedAt の整合：編集で running 状態を変えた場合の扱い
+      if (prev.status === 'running' && base.status === 'running') {
+        base.startedAt = prev.startedAt;            // 維持
+      } else if (prev.status !== 'running' && base.status === 'running') {
+        base.startedAt = new Date().toISOString();  // runningへ遷移したので開始
+      } else {
+        base.startedAt = null;                      // running以外
+      }
+
+     state.data.tasks[idx] = Object.assign({}, prev, base);
       toast('保存しました');
     } else {
       state.data.tasks.push(Object.assign({}, base, { createdAt: new Date().toISOString() }));
@@ -1974,9 +1996,11 @@ setDateRange(state.data.ui.dateRange || 'today', true);
   function assert(cond, msg){ if (!cond) throw new Error(msg || 'assertion failed'); }
 
   async function runTests(){
-    __TEST_MODE__ = true; // ★追加：保存を止める
+     __TEST_MODE__ = true; // ★追加：保存を止める
+    var snapshot = null;
+
   try {
-    var snapshot = JSON.parse(JSON.stringify(state.data));
+    snapshot = JSON.parse(JSON.stringify(state.data));
     state.data.tasks = [];
     var today = nowISODate();
 
@@ -2028,8 +2052,8 @@ setDateRange(state.data.ui.dateRange || 'today', true);
     console.error('Tests failed', e);
     toast('テスト失敗: ' + (e && e.message ? e.message : e));
   } finally {
-    // ★必ず元に戻す
-    state.data = snapshot;
+    // ★必ず元に戻す（snapshot が取れている場合のみ）
+    if (snapshot) state.data = snapshot;
     hydrateSelectors();
     renderProjects();
     renderAll();
