@@ -77,6 +77,7 @@
         <button onclick="setDateRange('today')" id="btn-today" class="view-btn px-4 py-1.5 text-xs font-bold rounded-md transition active">今日</button>
         <button onclick="setDateRange('rolling7')" id="btn-rolling7" class="view-btn px-4 py-1.5 text-xs font-bold rounded-md transition text-slate-500">直近7日</button>
         <button onclick="setDateRange('week')" id="btn-week" class="view-btn px-4 py-1.5 text-xs font-bold rounded-md transition text-slate-500">今週</button>
+        <button onclick="setDateRange('month')" id="btn-month" class="view-btn px-4 py-1.5 text-xs font-bold rounded-md transition text-slate-500">今月</button>
         <button onclick="setDateRange('undated')" id="btn-undated" class="view-btn px-4 py-1.5 text-xs font-bold rounded-md transition text-slate-500">未設定</button>
       <button onclick="openQuickSearch()" class="p-2 hover:bg-slate-100 rounded-lg" aria-label="search">
         <i class="fas fa-magnifying-glass text-slate-600"></i>
@@ -185,6 +186,7 @@
           <button onclick="setDateRange('today')" id="btn-today-m" class="view-btn w-1/4 px-2 py-1.5 text-xs font-bold rounded-md transition active">今日</button>
           <button onclick="setDateRange('rolling7')" id="btn-rolling7-m" class="view-btn w-1/4 px-2 py-1.5 text-xs font-bold rounded-md transition text-slate-500">直近7日</button>
           <button onclick="setDateRange('week')" id="btn-week-m" class="view-btn w-1/4 px-2 py-1.5 text-xs font-bold rounded-md transition text-slate-500">今週</button>
+          <button onclick="setDateRange('month')" id="btn-month-m" class="view-btn w-1/5 px-2 py-1.5 text-xs font-bold rounded-md transition text-slate-500">今月</button>
           <button onclick="setDateRange('undated')" id="btn-undated-m" class="view-btn w-1/4 px-2 py-1.5 text-xs font-bold rounded-md transition text-slate-500">未設定</button>
         </div>
         <button onclick="openTaskModal(null, true)" class="w-full mb-8 py-4 bg-white border-2 border-dashed border-rose-200 text-rose-500 rounded-2xl text-xs font-black tracking-widest hover:bg-rose-50 transition flex items-center justify-center gap-2 shadow-sm">
@@ -1270,7 +1272,7 @@ async function loadFromCloudThenRender(){
   function setDateRange(range, skipPersist){
     state.data.ui.dateRange = range;
 
-    ['today','rolling7','week','undated'].forEach(function(k){
+    ['today','rolling7','week','month','undated'].forEach(function(k){
       var btn = document.getElementById('btn-'+k);
       var btnm = document.getElementById('btn-'+k+'-m');
       if (btn){ btn.classList.toggle('active', k===range); btn.classList.toggle('text-slate-500', k!==range); }
@@ -1310,7 +1312,15 @@ async function loadFromCloudThenRender(){
     end.setHours(23,59,59,999);
     return d >= start && d <= end;
   }
-
+  
+ // 今月（暦月）
+ function inMonth(dateStr){
+   if (!dateStr) return false;
+   var d = new Date(dateStr + 'T00:00:00');
+   var now = new Date();
+   return d.getFullYear() === now.getFullYear() &&
+          d.getMonth() === now.getMonth();
+ }
 
   function matchesDateRange(task){
     var r = state.data.ui.dateRange;
@@ -1318,6 +1328,7 @@ async function loadFromCloudThenRender(){
     if (r === 'today') return task.date === nowISODate();
     if (r === 'rolling7') return inRolling7(task.date);
     if (r === 'week') return inWeek(task.date);
+    if (r === 'month') return inMonth(task.date);
     return true;
   }
 
