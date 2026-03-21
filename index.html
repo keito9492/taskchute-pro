@@ -17,9 +17,66 @@
 
     .status-running { border-left:4px solid #3b82f6; background:#eff6ff; }
     .status-paused { border-left:4px solid #f59e0b; background:#fffbeb; }
-    .status-completed { border-left:4px solid #10b981; background:#ecfdf5; opacity:0.75; }
-    .status-pending { border-left:4px solid #cbd5e1; background:white; }
-    .status-future { border-left:4px solid #94a3b8; background:#f1f5f9; opacity:0.9; }
+    .status-completed {
+      border-left: 4px solid #64748b;
+      background: #cbd5e1;
+      opacity: 1;
+    }
+    .status-completed .task-title,
+    .status-completed p,
+    .status-completed span {
+      color: #334155;
+    }
+
+    .carryover-card {
+      border-left: 4px solid #a78bfa;
+      background: #f5f3ff;
+    }
+
+    .month-grid {
+      display: grid;
+      grid-template-columns: repeat(7, minmax(0, 1fr));
+      gap: 0.75rem;
+    }
+    .month-cell {
+      min-height: 130px;
+      background: #fff;
+      border: 1px solid #e2e8f0;
+      border-radius: 1rem;
+      padding: 0.75rem;
+    }
+    .month-cell.is-out {
+      background: #f8fafc;
+      color: #94a3b8;
+    }
+    .month-cell.is-today {
+      border: 2px solid #3b82f6;
+      box-shadow: 0 0 0 3px rgba(59,130,246,0.08);
+    }
+    .month-task-chip {
+      display: block;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 0.25rem 0.5rem;
+      border-radius: 9999px;
+      background: #eff6ff;
+      color: #1d4ed8;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      margin-top: 0.35rem;
+      cursor: pointer;
+    }
+    .month-task-chip.is-completed {
+      background: #cbd5e1;
+      color: #334155;
+    }
+    .month-task-chip.is-interrupt {
+      background: #ffe4e6;
+      color: #be123c;
+    }
+   .status-pending { border-left:4px solid #cbd5e1; background:white; }
+   .status-future { border-left:4px solid #94a3b8; background:#f1f5f9; opacity:0.9; }
 
     #sidebar-overlay.hidden{
       display: none !important;
@@ -79,6 +136,8 @@
         <button onclick="setDateRange('week')" id="btn-week" class="view-btn px-4 py-1.5 text-xs font-bold rounded-md transition text-slate-500">今週</button>
         <button onclick="setDateRange('month')" id="btn-month" class="view-btn px-4 py-1.5 text-xs font-bold rounded-md transition text-slate-500">今月</button>
         <button onclick="setDateRange('undated')" id="btn-undated" class="view-btn px-4 py-1.5 text-xs font-bold rounded-md transition text-slate-500">未設定</button>
+     </div>
+
       <button onclick="openQuickSearch()" class="p-2 hover:bg-slate-100 rounded-lg" aria-label="search">
         <i class="fas fa-magnifying-glass text-slate-600"></i>
       </button>
@@ -528,7 +587,13 @@ try {
   /*********************
    * 2) Utils
    *********************/
-  function nowISODate(){ return new Date().toISOString().slice(0,10); }
+  function nowISODate(){
+  var d = new Date();
+  var y = d.getFullYear();
+  var m = String(d.getMonth() + 1).padStart(2, '0');
+  var day = String(d.getDate()).padStart(2, '0');
+  return y + '-' + m + '-' + day;
+}
     function uid(){
   var c = (typeof crypto !== 'undefined') ? crypto : null;
   return (c && c.randomUUID) ? c.randomUUID()
@@ -547,6 +612,40 @@ try {
     var mo = String(d.getMonth()+1).padStart(2,'0');
     var da = String(d.getDate()).padStart(2,'0');
     return y + '-' + mo + '-' + da;
+  }
+
+  function startOfDay(dateObj){
+    var d = new Date(dateObj);
+    d.setHours(0,0,0,0);
+    return d;
+  }
+
+  function isSameISODate(a, b){
+    return !!a && !!b && a === b;
+  }
+
+  function yesterdayISODate(){
+   return addDaysISO(nowISODate(), -1);
+  }
+
+  function getBusinessWeekRange(baseDate){
+    var now = startOfDay(baseDate || new Date());
+    var day = now.getDay(); // 0:日 1:月 2:火 ... 6:土
+    var diffToTuesday;
+
+    if (day === 0) diffToTuesday = -5;     // 日曜は直前火曜へ
+    else if (day === 1) diffToTuesday = -6; // 月曜は直前火曜へ
+    else diffToTuesday = 2 - day;          // 火〜土
+
+    var tuesday = new Date(now);
+    tuesday.setDate(now.getDate() + diffToTuesday);
+    tuesday.setHours(0,0,0,0);
+
+    var saturday = new Date(tuesday);
+    saturday.setDate(tuesday.getDate() + 4);
+    saturday.setHours(23,59,59,999);
+
+    return { start: tuesday, end: saturday };
   }
 
   function setStorageModeUI(mode){
@@ -1293,12 +1392,8 @@ async function loadFromCloudThenRender(){
   function inWeek(dateStr){
     if (!dateStr) return false;
     var d = new Date(dateStr + 'T00:00:00');
-    var now = new Date();
-    var day = now.getDay();
-    var diffToMon = (day === 0 ? -6 : 1 - day);
-    var monday = new Date(now); monday.setHours(0,0,0,0); monday.setDate(now.getDate() + diffToMon);
-    var sunday = new Date(monday); sunday.setDate(monday.getDate() + 6); sunday.setHours(23,59,59,999);
-    return d >= monday && d <= sunday;
+    var range = getBusinessWeekRange(new Date());
+    return d >= range.start && d <= range.end;
   }
   
   // 今日〜7日先まで（rolling 7 days）
@@ -1325,12 +1420,18 @@ async function loadFromCloudThenRender(){
   function matchesDateRange(task){
     var r = state.data.ui.dateRange;
     if (r === 'undated') return !task.date;
-    if (r === 'today') return task.date === nowISODate();
-    if (r === 'rolling7') return inRolling7(task.date);
-    if (r === 'week') return inWeek(task.date);
-    if (r === 'month') return inMonth(task.date);
-    return true;
-  }
+    if (r === 'today') {
+      var today = nowISODate();
+      var yesterday = yesterdayISODate();
+      if (task.date === today) return true;
+      if (task.date === yesterday && task.status !== 'completed') return true;
+      return false;
+    }
+     if (r === 'rolling7') return inRolling7(task.date);
+     if (r === 'week') return inWeek(task.date);
+     if (r === 'month') return inMonth(task.date);
+     return true;
+   }
 
   function isVisibleByFilters(task){
     var showCompleted = document.getElementById('filter-completed').checked;
@@ -1573,7 +1674,28 @@ function enforceEveningRule(now){
       return (Number(a.priority)||3) - (Number(b.priority)||3);
     }).filter(isVisibleByFilters);
 
-    if (!tasks.length){
+    if (state.data.ui.dateRange === 'month'){
+      container.innerHTML = '';
+      renderMonthCalendar(tasks, container);
+      recomputeTotals();
+      return;
+    }
+
+    var today = nowISODate();
+    var yesterday = yesterdayISODate();
+    var carryoverTasks = [];
+    var normalTasks = tasks;
+
+    if (state.data.ui.dateRange === 'today'){
+      carryoverTasks = tasks.filter(function(t){
+        return t.date === yesterday && t.status !== 'completed';
+      });
+      normalTasks = tasks.filter(function(t){
+        return !(t.date === yesterday && t.status !== 'completed');
+      });
+    }
+
+    if (!normalTasks.length && !carryoverTasks.length){
       container.innerHTML = '<div class="bg-white border rounded-3xl p-8 text-center">' +
         '<div class="text-3xl mb-2">🗂️</div>' +
         '<p class="font-bold text-slate-800">表示するタスクがありません</p>' +
@@ -1585,13 +1707,62 @@ function enforceEveningRule(now){
 
     // date -> tasks
     var dateGroups = new Map();
-    tasks.forEach(function(t){
+      normalTasks.forEach(function(t){
       var dk = t.date || '未設定';
       if (!dateGroups.has(dk)) dateGroups.set(dk, []);
       dateGroups.get(dk).push(t);
     });
 
     container.innerHTML = '';
+
+    if (state.data.ui.dateRange === 'today' && carryoverTasks.length){
+      var carrySection = document.createElement('section');
+      carrySection.className = 'mb-8';
+
+      var carryHeader = document.createElement('div');
+      carryHeader.className = 'mb-3 flex items-center justify-between';
+      carryHeader.innerHTML =
+        '<h2 class="text-sm font-black text-violet-700">前日からの持ち越し</h2>' +
+        '<span class="text-[11px] font-bold text-violet-500">' + carryoverTasks.length + '件</span>';
+
+      var carryList = document.createElement('div');
+      carryList.className = 'space-y-3';
+
+      carryoverTasks.forEach(function(t){
+        var pj = (getProject(t.projectId) && getProject(t.projectId).name) ? getProject(t.projectId).name : '—';
+        var card = document.createElement('div');
+        card.className = 'task-card carryover-card border rounded-3xl p-5 transition cursor-pointer';
+        card.onclick = function(){ openTaskModal(t.id); };
+        card.innerHTML =
+          '<div class="flex items-start justify-between gap-3">' +
+            '<div class="min-w-0">' +
+              '<div class="flex items-center gap-2 flex-wrap">' +
+                '<p class="task-title font-bold text-slate-800 truncate">' + escapeHtml(t.name || '(無題)') + '</p>' +
+                '<span class="text-[10px] font-black px-2 py-0.5 rounded-full bg-violet-100 text-violet-700">前日</span>' +
+                priorityBadge(t.priority) +
+              '</div>' +
+              '<div class="mt-1 text-xs text-slate-500 flex flex-wrap gap-x-3 gap-y-1">' +
+                '<span><i class="fa-regular fa-folder-open"></i> ' + escapeHtml(pj) + '</span>' +
+                '<span><i class="fa-regular fa-calendar"></i> ' + escapeHtml(prettyDate(t.date)) + '</span>' +
+                '<span><i class="fa-regular fa-hourglass"></i> 見積 ' + fmtMin(t.estimateMin) + '</span>' +
+              '</div>' +
+            '</div>' +
+            '<div class="task-actions flex items-center gap-2">' +
+              '<button onclick="event.stopPropagation(); postponeTask(\'' + t.id + '\', 1)" class="p-2 rounded-xl border hover:bg-slate-50" title="翌日へ送る">' +
+                '<i class="fas fa-forward text-violet-600"></i>' +
+              '</button>' +
+            '</div>' +
+          '</div>' +
+          '<div class="mt-4 bg-white/70 border border-violet-100 rounded-2xl p-3">' +
+            '<p class="text-xs text-slate-700 whitespace-pre-wrap">' + escapeHtml(t.notes || '') + '</p>' +
+          '</div>';
+        carryList.appendChild(card);
+      });
+
+      carrySection.appendChild(carryHeader);
+      carrySection.appendChild(carryList);
+      container.appendChild(carrySection);
+    }
 
     dateGroups.forEach(function(dateItems, dateKey){
       var dateSection = document.createElement('section');
@@ -1656,7 +1827,7 @@ function enforceEveningRule(now){
           card.innerHTML = '<div class="flex items-start justify-between gap-3">' +
             '<div class="min-w-0">' +
               '<div class="flex items-center gap-2 flex-wrap">' +
-                '<p class="font-bold text-slate-800 truncate">' + escapeHtml(t.name || '(無題)') + '</p>' +
+                '<p class="task-title font-bold text-slate-800 truncate">' + escapeHtml(t.name || '(無題)') + '</p>' +
                 (t.isInterrupt ? '<span class="text-[10px] font-black px-2 py-0.5 rounded-full bg-rose-100 text-rose-700">割り込み</span>' : '') +
                 priorityBadge(t.priority) +
                  (t.status==='running'
@@ -1722,6 +1893,114 @@ function enforceEveningRule(now){
     // ヘッダーの実績合計も更新（renderAllなしで）
     recomputeTotals();
   }
+
+  function getMonthMatrix(baseDate){
+    var now = baseDate || new Date();
+    var first = new Date(now.getFullYear(), now.getMonth(), 1);
+    var start = new Date(first);
+    start.setDate(first.getDate() - first.getDay()); // 日曜始まりカレンダー
+
+    var cells = [];
+    for (var i = 0; i < 42; i++){
+      var d = new Date(start);
+      d.setDate(start.getDate() + i);
+      var iso = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+      cells.push({
+        date: new Date(d),
+        iso: iso,
+        inMonth: d.getMonth() === now.getMonth()
+      });
+    }
+    return cells;
+  }
+
+  function renderMonthCalendar(tasks, container){
+    var now = new Date();
+    var monthCells = getMonthMatrix(now);
+    var today = nowISODate();
+
+    var byDate = {};
+    tasks.forEach(function(t){
+      if (!t.date) return;
+      if (!byDate[t.date]) byDate[t.date] = [];
+      byDate[t.date].push(t);
+    });
+
+    var wrap = document.createElement('section');
+    wrap.className = 'space-y-4';
+
+    var title = document.createElement('div');
+    title.className = 'flex items-center justify-between';
+    title.innerHTML =
+      '<h2 class="text-lg font-black text-slate-800">' +
+      now.getFullYear() + '年' + (now.getMonth()+1) + '月カレンダー</h2>' +
+      '<p class="text-xs text-slate-500">日付をクリックするとタスク詳細を開きます</p>';
+    wrap.appendChild(title);
+
+    var weekHeader = document.createElement('div');
+    weekHeader.className = 'month-grid';
+    ['日','月','火','水','木','金','土'].forEach(function(w){
+      var el = document.createElement('div');
+      el.className = 'text-center text-xs font-black text-slate-400';
+      el.textContent = w;
+      weekHeader.appendChild(el);
+    });
+    wrap.appendChild(weekHeader);
+
+    var grid = document.createElement('div');
+    grid.className = 'month-grid';
+
+    monthCells.forEach(function(cell){
+      var dayTasks = (byDate[cell.iso] || []).slice().sort(function(a,b){
+        return (Number(a.priority)||3) - (Number(b.priority)||3);
+      });
+
+      var cellEl = document.createElement('div');
+      cellEl.className =
+        'month-cell' +
+        (cell.inMonth ? '' : ' is-out') +
+        (cell.iso === today ? ' is-today' : '');
+
+      var head = document.createElement('div');
+      head.className = 'flex items-center justify-between mb-2';
+      head.innerHTML =
+       '<span class="text-sm font-black">' + cell.date.getDate() + '</span>' +
+       '<span class="text-[10px] text-slate-400">' + dayTasks.length + '件</span>';
+      cellEl.appendChild(head);
+
+      if (!dayTasks.length){
+        var empty = document.createElement('div');
+        empty.className = 'text-[11px] text-slate-300 mt-3';
+        empty.textContent = '予定なし';
+        cellEl.appendChild(empty);
+      } else {
+        dayTasks.slice(0, 3).forEach(function(t){
+          var chip = document.createElement('button');
+          chip.type = 'button';
+          chip.className =
+            'month-task-chip' +
+            (t.status === 'completed' ? ' is-completed' : '') +
+            (t.isInterrupt ? ' is-interrupt' : '');
+          chip.textContent = t.name || '(無題)';
+          chip.onclick = function(){ openTaskModal(t.id); };
+          cellEl.appendChild(chip);
+        });
+
+        if (dayTasks.length > 3){
+          var more = document.createElement('div');
+          more.className = 'text-[10px] text-slate-500 mt-2 font-bold';
+          more.textContent = '＋' + (dayTasks.length - 3) + '件';
+          cellEl.appendChild(more);
+        }
+      }
+
+      grid.appendChild(cellEl);
+    });
+
+    wrap.appendChild(grid);
+    container.appendChild(wrap);
+  }
+
   /*********************
    * 11) CRUD
    *********************/
@@ -1796,15 +2075,13 @@ function enforceEveningRule(now){
 
     if (idx >= 0){
       var prev = state.data.tasks[idx];
-      // ★追加：running → 非running に変えるなら、保存前に精算
     if (prev.status === 'running' && base.status === 'running') {
-      base.startedAt = prev.startedAt;            // 維持
-    } else if (prev.status !== 'running' && base.status === 'running') {
-      base.startedAt = new Date().toISOString();  // runningへ遷移したので開始
-    } else {
-      base.startedAt = null;                      // running以外
-    }
-      if (prev.status === 'running' && base.status === 'running') base.startedAt = prev.startedAt;
+    base.startedAt = prev.startedAt;
+  } else if (prev.status !== 'running' && base.status === 'running') {
+    base.startedAt = new Date().toISOString();
+  } else {
+    base.startedAt = null;
+  }
       state.data.tasks[idx] = Object.assign({}, prev, base);
       toast('保存しました');
     } else {
