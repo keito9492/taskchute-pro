@@ -17,16 +17,22 @@
 
     .status-running { border-left:4px solid #3b82f6; background:#eff6ff; }
     .status-paused { border-left:4px solid #f59e0b; background:#fffbeb; }
-    .status-completed {
-      border-left: 4px solid #64748b;
+     .status-completed {
+      border-left: 4px solid #475569;
       background: #cbd5e1;
       opacity: 1;
     }
-    .status-completed .task-title,
-    .status-completed p,
-    .status-completed span {
-      color: #334155;
-    }
+  
+  .status-completed .task-title,
+  .status-completed p,
+  .status-completed span {
+    color: #334155;
+  }
+  
+  .status-completed .task-title {
+    text-decoration: line-through;
+    text-decoration-thickness: 2px;
+  }
 
     .carryover-card {
       border-left: 4px solid #a78bfa;
