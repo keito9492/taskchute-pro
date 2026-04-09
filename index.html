@@ -255,6 +255,7 @@
           <section class="space-y-2">
             <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest">実行計画</label>
             <textarea id="sec-daily-plan" rows="5" class="w-full border-2 border-slate-100 rounded-2xl p-3 bg-slate-50 text-sm outline-none focus:border-blue-500" placeholder="09:30-10:00 準備&#10;10:00-10:25 Codeapp"></textarea>
+            <p class="text-[11px] text-slate-500">形式: <b>14:00-14:30 タスク名</b>（1行1件）</p>
             <div class="bg-white border border-slate-100 rounded-2xl p-3">
               <p class="text-[10px] font-black text-slate-400 uppercase tracking-widest">計画日の未完了タスク</p>
               <div id="sec-linked-tasks" class="mt-2 text-xs text-slate-600 whitespace-pre-wrap">読み込み中...</div>
@@ -276,8 +277,9 @@
             <textarea id="sec-weekly-lookahead" rows="4" class="w-full border-2 border-slate-100 rounded-2xl p-3 bg-slate-50 text-sm outline-none focus:border-blue-500" placeholder="来週期限、2週間先の仕込み、リスク"></textarea>
           </section>
 
-          <div class="grid grid-cols-2 gap-2 pt-1">
+          <div class="grid grid-cols-3 gap-2 pt-1">
             <button onclick="draftSecretaryPlanFromTasks()" class="bg-slate-100 text-slate-700 text-[11px] font-bold py-2 rounded-xl hover:bg-slate-200 transition">今日のタスクから下書き</button>
+            <button onclick="applyScheduleTextToTasks()" class="bg-emerald-50 text-emerald-700 text-[11px] font-bold py-2 rounded-xl hover:bg-emerald-100 transition">時間割を一括反映</button>
             <button onclick="saveSecretaryMemo()" class="bg-blue-600 text-white text-[11px] font-bold py-2 rounded-xl hover:bg-blue-700 transition">秘書メモ保存</button>
           </div>
         </div>
@@ -1453,6 +1455,99 @@ async function persist(meta){
     syncSecretaryMemoFromInputs(true);
     renderSecretaryLinkedTasks();
     toast('今日のタスクから下書きを作成しました');
+  }
+
+  function parseScheduleLine(line){
+    var src = String(line || '').trim();
+    if (!src) return null;
+    var m = src.match(/^(\d{1,2}):(\d{2})\s*[-ー－]\s*(\d{1,2}):(\d{2})\s+(.+)$/);
+    if (!m) return null;
+    var sh = Number(m[1]), sm = Number(m[2]), eh = Number(m[3]), em = Number(m[4]);
+    if (sh > 23 || eh > 23 || sm > 59 || em > 59) return null;
+    var startMin = sh * 60 + sm;
+    var endMin = eh * 60 + em;
+    if (endMin <= startMin) return null;
+    return {
+      startHour: sh,
+      startMin: sm,
+      endHour: eh,
+      endMin: em,
+      durationMin: endMin - startMin,
+      title: m[5].trim()
+    };
+  }
+
+  async function applyScheduleTextToTasks(){
+    var planDateEl = document.getElementById('sec-plan-date');
+    var dailyEl = document.getElementById('sec-daily-plan');
+    if (!planDateEl || !dailyEl) return;
+
+    var date = planDateEl.value || nowISODate();
+    var lines = String(dailyEl.value || '').split(/\r?\n/).map(function(x){ return x.trim(); }).filter(Boolean);
+    if (!lines.length){
+      toast('実行計画に反映する行がありません');
+      return;
+    }
+
+    var parsed = [];
+    var skipped = 0;
+    lines.forEach(function(line){
+      var row = parseScheduleLine(line);
+      if (row && row.title) parsed.push(row);
+      else skipped++;
+    });
+
+    if (!parsed.length){
+      toast('形式に合う行がありません（例: 14:00-14:30 タスク名）');
+      return;
+    }
+
+    var created = 0;
+    var updated = 0;
+
+    parsed.forEach(function(row){
+      var startAt = new Date(date + 'T' + pad(row.startHour) + ':' + pad(row.startMin) + ':00');
+      var sectionId = classifyTimeToSectionId(startAt);
+      var estimateMin = Math.max(15, Number(row.durationMin) || 15);
+
+      var target = state.data.tasks.find(function(t){
+        return t.date === date && (t.name || '').trim() === row.title && t.status !== 'completed';
+      });
+
+      if (target){
+        target.sectionId = sectionId;
+        target.estimateMin = estimateMin;
+        target.updatedAt = new Date().toISOString();
+        if (!target.notes) target.notes = '時間割一括反映で更新';
+        updated++;
+        return;
+      }
+
+      state.data.tasks.push({
+        id: uid(),
+        name: row.title,
+        sectionId: sectionId,
+        projectId: 'inbox',
+        estimateMin: estimateMin,
+        actualMin: 0,
+        date: date,
+        repeat: 'none',
+        status: 'pending',
+        priority: 3,
+        isInterrupt: false,
+        notes: '時間割一括反映で追加',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        startedAt: null
+      });
+      created++;
+    });
+
+    await persist();
+    renderAll();
+    renderSecretaryLinkedTasks();
+    setSecretaryDirty(false);
+    toast('時間割を反映しました（追加 ' + created + '件 / 更新 ' + updated + '件' + (skipped ? ' / スキップ ' + skipped + '件' : '') + '）');
   }
 
   async function saveSecretaryMemo(opts){
@@ -2821,6 +2916,7 @@ setDateRange(state.data.ui.dateRange || 'today', true);
   window.closeModal = closeModal;
   window.saveSecretaryMemo = saveSecretaryMemo;
   window.draftSecretaryPlanFromTasks = draftSecretaryPlanFromTasks;
+  window.applyScheduleTextToTasks = applyScheduleTextToTasks;
 
   window.setDateRange = setDateRange;
   window.setProjectFilter = setProjectFilter;
