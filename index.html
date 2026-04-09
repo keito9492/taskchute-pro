@@ -1457,11 +1457,60 @@ async function persist(meta){
     toast('今日のタスクから下書きを作成しました');
   }
 
+  function normalizeScheduleLineText(src){
+    src = String(src || '');
+    // 全角数字 -> 半角数字
+    src = src.replace(/[０-９]/g, function(ch){
+      return String.fromCharCode(ch.charCodeAt(0) - 0xFEE0);
+    });
+    // よくある表記ゆれを正規化
+    src = src.replace(/：/g, ':').replace(/[〜~―ー－]/g, '-');
+    return src.trim();
+  }
+
   function parseScheduleLine(line){
-    var src = String(line || '').trim();
+    var src = normalizeScheduleLineText(line);
+    // 先頭の箇条書き記号を許可
+    src = src.replace(/^[・•●\-\s]+/, '').trim();
     if (!src) return null;
-    var m = src.match(/^(\d{1,2}):(\d{2})\s*[-ー－]\s*(\d{1,2}):(\d{2})\s+(.+)$/);
+
+    // 1) HH:MM-HH:MM タイトル
+    var m = src.match(/^(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})\s+(.+)$/);
+    // 2) HHMM-HHMM タイトル
+    if (!m){
+      m = src.match(/^(\d{1,2})(\d{2})\s*-\s*(\d{1,2})(\d{2})\s+(.+)$/);
+    }
+    // 3) HH:MM-HH:MMタイトル（スペースなし）
+    if (!m){
+      m = src.match(/^(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})(.+)$/);
+    }
+    // 4) HHMM タイトル（終了時刻なし: 30分枠として扱う）
+    if (!m){
+      var mShort = src.match(/^(\d{3,4})\s+(.+)$/);
+      if (!mShort){
+        mShort = src.match(/^(\d{3,4})(.+)$/);
+      }
+      if (mShort){
+        var hhmm = mShort[1];
+        var title = String(mShort[2] || '').trim();
+        var sh2 = Number(hhmm.length === 3 ? hhmm.slice(0,1) : hhmm.slice(0,2));
+        var sm2 = Number(hhmm.slice(-2));
+        if (sh2 <= 23 && sm2 <= 59 && title){
+          var startTotal = sh2 * 60 + sm2;
+          var endTotal = startTotal + 30;
+          return {
+            startHour: Math.floor(startTotal / 60),
+            startMin: startTotal % 60,
+            endHour: Math.floor(endTotal / 60),
+            endMin: endTotal % 60,
+            durationMin: 30,
+            title: title
+          };
+        }
+      }
+    }
     if (!m) return null;
+
     var sh = Number(m[1]), sm = Number(m[2]), eh = Number(m[3]), em = Number(m[4]);
     if (sh > 23 || eh > 23 || sm > 59 || em > 59) return null;
     var startMin = sh * 60 + sm;
@@ -1477,24 +1526,67 @@ async function persist(meta){
     };
   }
 
+  function parseSectionEstimateLine(line){
+    var src = normalizeScheduleLineText(line);
+    src = src.replace(/^[・•●\-\s]+/, '').trim();
+    if (!src) return null;
+    // 例: 午後 / 授業の作成 / 見積 1h 00m
+    var m = src.match(/^(午前|午後|朝|夜)\s*\/\s*(.+?)\s*\/\s*見積\s*(\d+)h\s*(\d+)m$/);
+    if (!m) return null;
+    var secMap = { '朝':'morning', '午前':'forenoon', '午後':'afternoon', '夜':'evening' };
+    var sectionId = secMap[m[1]] || 'afternoon';
+    var title = String(m[2] || '').trim();
+    var hh = Number(m[3] || 0);
+    var mm = Number(m[4] || 0);
+    var dur = Math.max(15, hh * 60 + mm);
+    if (!title) return null;
+    return {
+      sectionId: sectionId,
+      title: title,
+      durationMin: dur
+    };
+  }
+
   async function applyScheduleTextToTasks(){
     var planDateEl = document.getElementById('sec-plan-date');
     var dailyEl = document.getElementById('sec-daily-plan');
-    if (!planDateEl || !dailyEl) return;
+    var fixedEl = document.getElementById('sec-fixed-events');
+    if (!planDateEl || !dailyEl || !fixedEl) return;
 
     var date = planDateEl.value || nowISODate();
-    var lines = String(dailyEl.value || '').split(/\r?\n/).map(function(x){ return x.trim(); }).filter(Boolean);
+    var lines = (String(dailyEl.value || '') + '\n' + String(fixedEl.value || ''))
+      .split(/\r?\n/)
+      .map(function(x){ return x.trim(); })
+      .filter(Boolean);
     if (!lines.length){
       toast('実行計画に反映する行がありません');
       return;
     }
 
     var parsed = [];
+    var skippedLines = [];
     var skipped = 0;
     lines.forEach(function(line){
       var row = parseScheduleLine(line);
-      if (row && row.title) parsed.push(row);
-      else skipped++;
+      if (row && row.title) {
+        parsed.push({
+          title: row.title,
+          durationMin: row.durationMin,
+          sectionId: classifyTimeToSectionId(new Date(date + 'T' + pad(row.startHour) + ':' + pad(row.startMin) + ':00'))
+        });
+        return;
+      }
+      var row2 = parseSectionEstimateLine(line);
+      if (row2 && row2.title){
+        parsed.push({
+          title: row2.title,
+          durationMin: row2.durationMin,
+          sectionId: row2.sectionId
+        });
+        return;
+      }
+      skipped++;
+      if (skippedLines.length < 3) skippedLines.push(line);
     });
 
     if (!parsed.length){
@@ -1506,8 +1598,7 @@ async function persist(meta){
     var updated = 0;
 
     parsed.forEach(function(row){
-      var startAt = new Date(date + 'T' + pad(row.startHour) + ':' + pad(row.startMin) + ':00');
-      var sectionId = classifyTimeToSectionId(startAt);
+      var sectionId = row.sectionId || 'afternoon';
       var estimateMin = Math.max(15, Number(row.durationMin) || 15);
 
       var target = state.data.tasks.find(function(t){
@@ -1547,6 +1638,12 @@ async function persist(meta){
     renderAll();
     renderSecretaryLinkedTasks();
     setSecretaryDirty(false);
+    if (skippedLines.length){
+      console.warn('schedule skipped lines', skippedLines);
+    }
+    if (created === 0 && updated === 0){
+      alert('反映対象が0件でした。\n書式に合わない行がある可能性があります。\n先頭3件: ' + (skippedLines.join(' / ') || '（なし）'));
+    }
     toast('時間割を反映しました（追加 ' + created + '件 / 更新 ' + updated + '件' + (skipped ? ' / スキップ ' + skipped + '件' : '') + '）');
   }
 
