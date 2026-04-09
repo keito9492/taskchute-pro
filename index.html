@@ -229,7 +229,10 @@
           <section class="bg-slate-50 p-3 rounded-xl border border-slate-100 space-y-2">
             <div class="flex items-center justify-between">
               <h3 class="text-[10px] font-black text-slate-400 uppercase tracking-widest">秘書サマリー</h3>
-              <span id="secretary-last-updated" class="text-[10px] text-slate-500">未保存</span>
+              <div class="flex items-center gap-2">
+                <span id="secretary-dirty-badge" class="hidden text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">未保存あり</span>
+                <span id="secretary-last-updated" class="text-[10px] text-slate-500">未保存</span>
+              </div>
             </div>
             <p id="secretary-upcoming-stats" class="text-xs text-slate-600 leading-relaxed">先のタスク件数を計算中...</p>
           </section>
@@ -252,6 +255,10 @@
           <section class="space-y-2">
             <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest">実行計画</label>
             <textarea id="sec-daily-plan" rows="5" class="w-full border-2 border-slate-100 rounded-2xl p-3 bg-slate-50 text-sm outline-none focus:border-blue-500" placeholder="09:30-10:00 準備&#10;10:00-10:25 Codeapp"></textarea>
+            <div class="bg-white border border-slate-100 rounded-2xl p-3">
+              <p class="text-[10px] font-black text-slate-400 uppercase tracking-widest">計画日の未完了タスク</p>
+              <div id="sec-linked-tasks" class="mt-2 text-xs text-slate-600 whitespace-pre-wrap">読み込み中...</div>
+            </div>
           </section>
 
           <section class="space-y-2">
@@ -882,6 +889,10 @@ var _cooldownUntil = 0;
 var _persistInFlight = false;
 var _dirtyWhileInFlight = false;
 var __TEST_MODE__ = false;
+var _secretaryDirty = false;
+var _secretaryAutoSaveTimer = null;
+var _secretaryInputBound = false;
+var SECRETARY_AUTOSAVE_MS = 15 * 60 * 1000;
 
 function startLoginCooldown(){
   _cooldownUntil = Date.now() + LOGIN_COOLDOWN_MS;
@@ -1287,6 +1298,7 @@ async function persist(meta){
   function renderSecretaryStats(){
     var statsEl = document.getElementById('secretary-upcoming-stats');
     var updatedEl = document.getElementById('secretary-last-updated');
+    var dirtyEl = document.getElementById('secretary-dirty-badge');
     if (!statsEl || !updatedEl) return;
 
     var memo = normalizeAssistantMemo(state.data.assistantMemo);
@@ -1306,29 +1318,111 @@ async function persist(meta){
     if (nextDate) text += ' / 次回期限 ' + prettyDate(nextDate) + ' (' + nextCount + '件)';
     statsEl.textContent = text;
     updatedEl.textContent = memo.updatedAt ? ('更新: ' + memo.updatedAt.slice(0,16).replace('T',' ')) : '未保存';
+    if (dirtyEl){
+      if (_secretaryDirty) dirtyEl.classList.remove('hidden');
+      else dirtyEl.classList.add('hidden');
+    }
+  }
+
+  function getSecretaryInputElements(){
+    return {
+      planDate: document.getElementById('sec-plan-date'),
+      top3: document.getElementById('sec-top3'),
+      fixedEvents: document.getElementById('sec-fixed-events'),
+      dailyPlan: document.getElementById('sec-daily-plan'),
+      executionLog: document.getElementById('sec-exec-log'),
+      eveningReview: document.getElementById('sec-evening-review'),
+      weeklyLookahead: document.getElementById('sec-weekly-lookahead')
+    };
+  }
+
+  function setSecretaryDirty(flag){
+    _secretaryDirty = !!flag;
+    renderSecretaryStats();
+  }
+
+  function syncSecretaryMemoFromInputs(markDirty){
+    var els = getSecretaryInputElements();
+    if (!els.planDate || !els.top3 || !els.fixedEvents || !els.dailyPlan || !els.executionLog || !els.eveningReview || !els.weeklyLookahead) return;
+    var memo = normalizeAssistantMemo(state.data.assistantMemo);
+    memo.planDate = els.planDate.value || nowISODate();
+    memo.top3 = els.top3.value || '';
+    memo.fixedEvents = els.fixedEvents.value || '';
+    memo.dailyPlan = els.dailyPlan.value || '';
+    memo.executionLog = els.executionLog.value || '';
+    memo.eveningReview = els.eveningReview.value || '';
+    memo.weeklyLookahead = els.weeklyLookahead.value || '';
+    state.data.assistantMemo = memo;
+    if (markDirty) setSecretaryDirty(true);
+  }
+
+  function renderSecretaryLinkedTasks(){
+    var wrap = document.getElementById('sec-linked-tasks');
+    var planDateEl = document.getElementById('sec-plan-date');
+    if (!wrap || !planDateEl) return;
+    var day = planDateEl.value || nowISODate();
+    var list = state.data.tasks
+      .filter(function(t){ return t.date === day && t.status !== 'completed'; })
+      .sort(function(a,b){
+        var ai = sectionStartMin(a.sectionId || 'afternoon');
+        var bi = sectionStartMin(b.sectionId || 'afternoon');
+        if (ai !== bi) return ai - bi;
+        return (Number(a.priority)||3) - (Number(b.priority)||3);
+      })
+      .map(function(t){
+        var sec = (getSection(t.sectionId) && getSection(t.sectionId).name) ? getSection(t.sectionId).name : '未分類';
+        return '・' + sec + ' / ' + (t.name || '(無題)') + ' / 見積 ' + fmtMin(t.estimateMin);
+      });
+
+    wrap.textContent = list.length ? list.join('\n') : '未完了タスクはありません';
+  }
+
+  function bindSecretaryInputs(){
+    if (_secretaryInputBound) return;
+    var els = getSecretaryInputElements();
+    if (!els.planDate || !els.top3 || !els.fixedEvents || !els.dailyPlan || !els.executionLog || !els.eveningReview || !els.weeklyLookahead) return;
+
+    [els.planDate, els.top3, els.fixedEvents, els.dailyPlan, els.executionLog, els.eveningReview, els.weeklyLookahead].forEach(function(el){
+      el.addEventListener('input', function(){
+        syncSecretaryMemoFromInputs(true);
+        if (el === els.planDate) renderSecretaryLinkedTasks();
+      });
+      el.addEventListener('change', function(){
+        syncSecretaryMemoFromInputs(true);
+        if (el === els.planDate) renderSecretaryLinkedTasks();
+      });
+    });
+    _secretaryInputBound = true;
+  }
+
+  function startSecretaryAutoSave(){
+    if (_secretaryAutoSaveTimer) clearInterval(_secretaryAutoSaveTimer);
+    _secretaryAutoSaveTimer = setInterval(function(){
+      if (!_secretaryDirty) return;
+      saveSecretaryMemo({ silent: true, source: 'autosave' }).catch(function(e){
+        console.warn('secretary autosave failed', e);
+      });
+    }, SECRETARY_AUTOSAVE_MS);
   }
 
   function renderSecretaryMemo(){
     var memo = normalizeAssistantMemo(state.data.assistantMemo);
     state.data.assistantMemo = memo;
 
-    var planDateEl = document.getElementById('sec-plan-date');
-    var top3El = document.getElementById('sec-top3');
-    var fixedEl = document.getElementById('sec-fixed-events');
-    var dailyEl = document.getElementById('sec-daily-plan');
-    var execEl = document.getElementById('sec-exec-log');
-    var eveningEl = document.getElementById('sec-evening-review');
-    var weeklyEl = document.getElementById('sec-weekly-lookahead');
-    if (!planDateEl || !top3El || !fixedEl || !dailyEl || !execEl || !eveningEl || !weeklyEl) return;
+    var els = getSecretaryInputElements();
+    if (!els.planDate || !els.top3 || !els.fixedEvents || !els.dailyPlan || !els.executionLog || !els.eveningReview || !els.weeklyLookahead) return;
 
-    planDateEl.value = memo.planDate || nowISODate();
-    top3El.value = memo.top3 || '';
-    fixedEl.value = memo.fixedEvents || '';
-    dailyEl.value = memo.dailyPlan || '';
-    execEl.value = memo.executionLog || '';
-    eveningEl.value = memo.eveningReview || '';
-    weeklyEl.value = memo.weeklyLookahead || '';
+    els.planDate.value = memo.planDate || nowISODate();
+    els.top3.value = memo.top3 || '';
+    els.fixedEvents.value = memo.fixedEvents || '';
+    els.dailyPlan.value = memo.dailyPlan || '';
+    els.executionLog.value = memo.executionLog || '';
+    els.eveningReview.value = memo.eveningReview || '';
+    els.weeklyLookahead.value = memo.weeklyLookahead || '';
 
+    bindSecretaryInputs();
+    renderSecretaryLinkedTasks();
+    setSecretaryDirty(false);
     renderSecretaryStats();
   }
 
@@ -1356,33 +1450,23 @@ async function persist(meta){
       return;
     }
     dailyEl.value = taskLines.join('\n');
+    syncSecretaryMemoFromInputs(true);
+    renderSecretaryLinkedTasks();
     toast('今日のタスクから下書きを作成しました');
   }
 
-  async function saveSecretaryMemo(){
-    var planDateEl = document.getElementById('sec-plan-date');
-    var top3El = document.getElementById('sec-top3');
-    var fixedEl = document.getElementById('sec-fixed-events');
-    var dailyEl = document.getElementById('sec-daily-plan');
-    var execEl = document.getElementById('sec-exec-log');
-    var eveningEl = document.getElementById('sec-evening-review');
-    var weeklyEl = document.getElementById('sec-weekly-lookahead');
-    if (!planDateEl || !top3El || !fixedEl || !dailyEl || !execEl || !eveningEl || !weeklyEl) return;
-
+  async function saveSecretaryMemo(opts){
+    opts = opts || {};
+    syncSecretaryMemoFromInputs(false);
     var memo = normalizeAssistantMemo(state.data.assistantMemo);
-    memo.planDate = planDateEl.value || nowISODate();
-    memo.top3 = top3El.value || '';
-    memo.fixedEvents = fixedEl.value || '';
-    memo.dailyPlan = dailyEl.value || '';
-    memo.executionLog = execEl.value || '';
-    memo.eveningReview = eveningEl.value || '';
-    memo.weeklyLookahead = weeklyEl.value || '';
     memo.updatedAt = new Date().toISOString();
     state.data.assistantMemo = memo;
 
     await persist();
+    setSecretaryDirty(false);
+    renderSecretaryLinkedTasks();
     renderSecretaryStats();
-    toast('秘書メモを保存しました');
+    if (!opts.silent) toast('秘書メモを保存しました');
   }
 
   document.addEventListener('keydown', function(e){
@@ -2699,15 +2783,17 @@ setDateRange(state.data.ui.dateRange || 'today', true);
       renderProjects();
       setDateRange(state.data.ui.dateRange || 'today', true);
       renderAll();
+      startSecretaryAutoSave();
       startTicker();
       return;
     }
 
-  // ✅ Supabaseありの場合：起動時は reconcileLocalAndCloud() を唯一の入口にする
+ // ✅ Supabaseありの場合：起動時は reconcileLocalAndCloud() を唯一の入口にする
   //    (Local/Cloud の newer 判定 → state.data 決定 → 必要に応じてミラー)
     await loadFromCloudThenRender();
 
  // loadFromCloudThenRender() 内で render までやっているのでここでは不要
+    startSecretaryAutoSave();
     startTicker();
   // ✅ 認証イベントでは「UI更新 + クールダウン + 必要なら reconcile」だけ
   //    ※ここで storage.load() すると “ローカル優先→空保存→クラウド上書き” 事故が起きる
@@ -2771,6 +2857,7 @@ setDateRange(state.data.ui.dateRange || 'today', true);
     
   // ✅ ページ離脱時に最後の保存を試みる（無限再予約防止のため fromUnload:true）
  window.addEventListener('beforeunload', function(){
+  syncSecretaryMemoFromInputs(false);
   // ローカルだけ保存（同期は次回起動時に reconcile で吸収）
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state.data));
 });
