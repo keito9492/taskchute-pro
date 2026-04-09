@@ -160,6 +160,7 @@
     <aside id="sidebar" class="w-72 bg-white border-r flex flex-col fixed inset-y-0 left-0 z-20 sidebar-transition sidebar-hidden lg:relative lg:translate-x-0">
       <div class="flex border-b text-center text-[11px] font-bold uppercase tracking-wider text-slate-400">
         <button onclick="switchSidebarTab('plan')" id="tab-plan" class="flex-1 py-4 tab-active">表示設定</button>
+        <button onclick="switchSidebarTab('secretary')" id="tab-secretary" class="flex-1 py-4">秘書メモ</button>
         <button onclick="switchSidebarTab('sync')" id="tab-sync" class="flex-1 py-4">同期・管理</button>
       </div>
 
@@ -221,6 +222,56 @@
           <div class="pt-2 border-t">
             <p class="text-[10px] font-bold text-slate-500 mb-2">デバッグ</p>
             <button onclick="runTests()" class="w-full bg-slate-900 text-white text-[10px] font-bold py-2 rounded-lg hover:bg-slate-800 transition">簡易テスト実行</button>
+          </div>
+        </div>
+
+        <div id="view-secretary" class="hidden space-y-4">
+          <section class="bg-slate-50 p-3 rounded-xl border border-slate-100 space-y-2">
+            <div class="flex items-center justify-between">
+              <h3 class="text-[10px] font-black text-slate-400 uppercase tracking-widest">秘書サマリー</h3>
+              <span id="secretary-last-updated" class="text-[10px] text-slate-500">未保存</span>
+            </div>
+            <p id="secretary-upcoming-stats" class="text-xs text-slate-600 leading-relaxed">先のタスク件数を計算中...</p>
+          </section>
+
+          <section class="space-y-2">
+            <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest">計画日</label>
+            <input type="date" id="sec-plan-date" class="w-full border-2 border-slate-100 rounded-2xl p-3 bg-slate-50 text-sm outline-none focus:border-blue-500" />
+          </section>
+
+          <section class="space-y-2">
+            <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest">最重要3件</label>
+            <textarea id="sec-top3" rows="3" class="w-full border-2 border-slate-100 rounded-2xl p-3 bg-slate-50 text-sm outline-none focus:border-blue-500" placeholder="1.&#10;2.&#10;3."></textarea>
+          </section>
+
+          <section class="space-y-2">
+            <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest">固定予定</label>
+            <textarea id="sec-fixed-events" rows="3" class="w-full border-2 border-slate-100 rounded-2xl p-3 bg-slate-50 text-sm outline-none focus:border-blue-500" placeholder="13:30-14:00 セミナー①"></textarea>
+          </section>
+
+          <section class="space-y-2">
+            <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest">実行計画</label>
+            <textarea id="sec-daily-plan" rows="5" class="w-full border-2 border-slate-100 rounded-2xl p-3 bg-slate-50 text-sm outline-none focus:border-blue-500" placeholder="09:30-10:00 準備&#10;10:00-10:25 Codeapp"></textarea>
+          </section>
+
+          <section class="space-y-2">
+            <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest">実行ログ</label>
+            <textarea id="sec-exec-log" rows="4" class="w-full border-2 border-slate-100 rounded-2xl p-3 bg-slate-50 text-sm outline-none focus:border-blue-500" placeholder="開始/中断/完了を追記"></textarea>
+          </section>
+
+          <section class="space-y-2">
+            <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest">夕方振り返り</label>
+            <textarea id="sec-evening-review" rows="4" class="w-full border-2 border-slate-100 rounded-2xl p-3 bg-slate-50 text-sm outline-none focus:border-blue-500" placeholder="未完了理由、見積差、明日への繰越"></textarea>
+          </section>
+
+          <section class="space-y-2">
+            <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest">先タスク（週次）</label>
+            <textarea id="sec-weekly-lookahead" rows="4" class="w-full border-2 border-slate-100 rounded-2xl p-3 bg-slate-50 text-sm outline-none focus:border-blue-500" placeholder="来週期限、2週間先の仕込み、リスク"></textarea>
+          </section>
+
+          <div class="grid grid-cols-2 gap-2 pt-1">
+            <button onclick="draftSecretaryPlanFromTasks()" class="bg-slate-100 text-slate-700 text-[11px] font-bold py-2 rounded-xl hover:bg-slate-200 transition">今日のタスクから下書き</button>
+            <button onclick="saveSecretaryMemo()" class="bg-blue-600 text-white text-[11px] font-bold py-2 rounded-xl hover:bg-blue-700 transition">秘書メモ保存</button>
           </div>
         </div>
 
@@ -763,6 +814,34 @@ function mergeTask(localT, cloudT){
     return 'morning';
   }
 
+  function createDefaultAssistantMemo(){
+    return {
+      planDate: nowISODate(),
+      top3: '',
+      fixedEvents: '',
+      dailyPlan: '',
+      executionLog: '',
+      eveningReview: '',
+      weeklyLookahead: '',
+      updatedAt: ''
+    };
+  }
+
+  function normalizeAssistantMemo(raw){
+    var base = createDefaultAssistantMemo();
+    var safe = (raw && typeof raw === 'object') ? raw : {};
+    var merged = Object.assign({}, base, safe);
+    merged.planDate = (typeof merged.planDate === 'string' && merged.planDate) ? merged.planDate : nowISODate();
+    merged.top3 = String(merged.top3 || '');
+    merged.fixedEvents = String(merged.fixedEvents || '');
+    merged.dailyPlan = String(merged.dailyPlan || '');
+    merged.executionLog = String(merged.executionLog || '');
+    merged.eveningReview = String(merged.eveningReview || '');
+    merged.weeklyLookahead = String(merged.weeklyLookahead || '');
+    merged.updatedAt = String(merged.updatedAt || '');
+    return merged;
+  }
+
   /*********************
    * 4) State (varでTDZ回避)
    *********************/
@@ -772,7 +851,8 @@ function mergeTask(localT, cloudT){
       projects: [ { id: 'inbox', name: 'INBOX' } ],
       sections: DEFAULT_SECTIONS,
       tasks: [],
-      ui: { dateRange: 'today', projectFilter: null }
+      ui: { dateRange: 'today', projectFilter: null },
+      assistantMemo: createDefaultAssistantMemo()
     }
   };
 
@@ -782,7 +862,8 @@ function mergeTask(localT, cloudT){
     var sections = Array.isArray(safe.sections) ? safe.sections : DEFAULT_SECTIONS;
     var tasks = Array.isArray(safe.tasks) ? safe.tasks : [];
     var ui = (safe.ui && typeof safe.ui === 'object') ? safe.ui : { dateRange:'today', projectFilter:null };
-    return { meta: { version: 1, updatedAt: new Date().toISOString() }, projects: projects, sections: sections, tasks: tasks, ui: ui };
+    var assistantMemo = normalizeAssistantMemo(safe.assistantMemo);
+    return { meta: { version: 1, updatedAt: new Date().toISOString() }, projects: projects, sections: sections, tasks: tasks, ui: ui, assistantMemo: assistantMemo };
   }
 
 /*********************
@@ -908,6 +989,15 @@ function computeDataTimeByTasks(data){
       var tt = Date.parse((t && t.updatedAt) ? t.updatedAt : '');
       if (Number.isFinite(tt) && tt > max) max = tt;
     }
+    var memoTs = Date.parse(
+      data &&
+      data.assistantMemo &&
+      typeof data.assistantMemo === 'object' &&
+      data.assistantMemo.updatedAt
+        ? data.assistantMemo.updatedAt
+        : ''
+    );
+    if (Number.isFinite(memoTs) && memoTs > max) max = memoTs;
     return max;
   } catch(e){
     return 0;
@@ -974,7 +1064,8 @@ async function reconcileLocalAndCloud(){
     projects: base.projects,
     sections: base.sections,
     ui: base.ui,
-    tasks: mergedTasks
+    tasks: mergedTasks,
+    assistantMemo: base.assistantMemo
   });
   state.data.meta.updatedAt = new Date().toISOString();
 
@@ -1157,26 +1248,141 @@ async function persist(meta){
 
   function switchSidebarTab(tab){
     var tabPlan = document.getElementById('tab-plan');
+    var tabSecretary = document.getElementById('tab-secretary');
     var tabSync = document.getElementById('tab-sync');
     var viewPlan = document.getElementById('view-plan');
+    var viewSecretary = document.getElementById('view-secretary');
     var viewSync = document.getElementById('view-sync');
 
     if (tab === 'plan'){
       tabPlan.classList.add('tab-active');
+      tabSecretary.classList.remove('tab-active');
       tabSync.classList.remove('tab-active');
       viewPlan.classList.remove('hidden');
+      viewSecretary.classList.add('hidden');
       viewSync.classList.add('hidden');
+    } else if (tab === 'secretary'){
+      tabPlan.classList.remove('tab-active');
+      tabSecretary.classList.add('tab-active');
+      tabSync.classList.remove('tab-active');
+      viewPlan.classList.add('hidden');
+      viewSecretary.classList.remove('hidden');
+      viewSync.classList.add('hidden');
+      renderSecretaryMemo();
     } else {
       tabSync.classList.add('tab-active');
       tabPlan.classList.remove('tab-active');
+      tabSecretary.classList.remove('tab-active');
       viewSync.classList.remove('hidden');
       viewPlan.classList.add('hidden');
+      viewSecretary.classList.add('hidden');
     }
   }
 
   function openQuickSearch(){
     openModal('search-modal');
     setTimeout(function(){ document.getElementById('search-q').focus(); }, 50);
+  }
+
+  function renderSecretaryStats(){
+    var statsEl = document.getElementById('secretary-upcoming-stats');
+    var updatedEl = document.getElementById('secretary-last-updated');
+    if (!statsEl || !updatedEl) return;
+
+    var memo = normalizeAssistantMemo(state.data.assistantMemo);
+    state.data.assistantMemo = memo;
+
+    var today = nowISODate();
+    var future = state.data.tasks.filter(function(t){
+      return !!t.date && t.date > today && t.status !== 'completed';
+    });
+    var undated = state.data.tasks.filter(function(t){
+      return !t.date && t.status !== 'completed';
+    }).length;
+    var nextDate = future.length ? future.map(function(t){ return t.date; }).sort()[0] : null;
+    var nextCount = nextDate ? future.filter(function(t){ return t.date === nextDate; }).length : 0;
+
+    var text = '先タスク ' + future.length + '件 / 未設定 ' + undated + '件';
+    if (nextDate) text += ' / 次回期限 ' + prettyDate(nextDate) + ' (' + nextCount + '件)';
+    statsEl.textContent = text;
+    updatedEl.textContent = memo.updatedAt ? ('更新: ' + memo.updatedAt.slice(0,16).replace('T',' ')) : '未保存';
+  }
+
+  function renderSecretaryMemo(){
+    var memo = normalizeAssistantMemo(state.data.assistantMemo);
+    state.data.assistantMemo = memo;
+
+    var planDateEl = document.getElementById('sec-plan-date');
+    var top3El = document.getElementById('sec-top3');
+    var fixedEl = document.getElementById('sec-fixed-events');
+    var dailyEl = document.getElementById('sec-daily-plan');
+    var execEl = document.getElementById('sec-exec-log');
+    var eveningEl = document.getElementById('sec-evening-review');
+    var weeklyEl = document.getElementById('sec-weekly-lookahead');
+    if (!planDateEl || !top3El || !fixedEl || !dailyEl || !execEl || !eveningEl || !weeklyEl) return;
+
+    planDateEl.value = memo.planDate || nowISODate();
+    top3El.value = memo.top3 || '';
+    fixedEl.value = memo.fixedEvents || '';
+    dailyEl.value = memo.dailyPlan || '';
+    execEl.value = memo.executionLog || '';
+    eveningEl.value = memo.eveningReview || '';
+    weeklyEl.value = memo.weeklyLookahead || '';
+
+    renderSecretaryStats();
+  }
+
+  function draftSecretaryPlanFromTasks(){
+    var planDateEl = document.getElementById('sec-plan-date');
+    var dailyEl = document.getElementById('sec-daily-plan');
+    if (!planDateEl || !dailyEl) return;
+
+    var day = planDateEl.value || nowISODate();
+    var taskLines = state.data.tasks
+      .filter(function(t){ return t.date === day && t.status !== 'completed'; })
+      .sort(function(a,b){
+        var ai = sectionStartMin(a.sectionId || 'afternoon');
+        var bi = sectionStartMin(b.sectionId || 'afternoon');
+        if (ai !== bi) return ai - bi;
+        return (Number(a.priority)||3) - (Number(b.priority)||3);
+      })
+      .map(function(t){
+        var sec = (getSection(t.sectionId) && getSection(t.sectionId).name) ? getSection(t.sectionId).name : '未分類';
+        return '・' + sec + ' / ' + (t.name || '(無題)') + ' / 見積 ' + fmtMin(t.estimateMin);
+      });
+
+    if (!taskLines.length){
+      toast('その日の未完了タスクがありません');
+      return;
+    }
+    dailyEl.value = taskLines.join('\n');
+    toast('今日のタスクから下書きを作成しました');
+  }
+
+  async function saveSecretaryMemo(){
+    var planDateEl = document.getElementById('sec-plan-date');
+    var top3El = document.getElementById('sec-top3');
+    var fixedEl = document.getElementById('sec-fixed-events');
+    var dailyEl = document.getElementById('sec-daily-plan');
+    var execEl = document.getElementById('sec-exec-log');
+    var eveningEl = document.getElementById('sec-evening-review');
+    var weeklyEl = document.getElementById('sec-weekly-lookahead');
+    if (!planDateEl || !top3El || !fixedEl || !dailyEl || !execEl || !eveningEl || !weeklyEl) return;
+
+    var memo = normalizeAssistantMemo(state.data.assistantMemo);
+    memo.planDate = planDateEl.value || nowISODate();
+    memo.top3 = top3El.value || '';
+    memo.fixedEvents = fixedEl.value || '';
+    memo.dailyPlan = dailyEl.value || '';
+    memo.executionLog = execEl.value || '';
+    memo.eveningReview = eveningEl.value || '';
+    memo.weeklyLookahead = weeklyEl.value || '';
+    memo.updatedAt = new Date().toISOString();
+    state.data.assistantMemo = memo;
+
+    await persist();
+    renderSecretaryStats();
+    toast('秘書メモを保存しました');
   }
 
   document.addEventListener('keydown', function(e){
@@ -1355,7 +1561,8 @@ async function loadFromCloudThenRender(){
           updatedAt: new Date().toISOString(),
           startedAt: null,
         }],
-        ui: { dateRange:'today', projectFilter:null }
+        ui: { dateRange:'today', projectFilter:null },
+        assistantMemo: createDefaultAssistantMemo()
       });
 
       // ★サンプルは「ローカルだけ」に確実に置く（クラウドへは無理に同期しない）
@@ -1645,6 +1852,7 @@ function enforceEveningRule(now){
     var hh = String(finish.getHours()).padStart(2,'0');
     var mm = String(finish.getMinutes()).padStart(2,'0');
     document.getElementById('finish-estimate').textContent = hh + ':' + mm;
+    renderSecretaryStats();
   }
 
   function renderProjects(){
@@ -2525,6 +2733,8 @@ setDateRange(state.data.ui.dateRange || 'today', true);
   window.openQuickSearch = openQuickSearch;
   window.openAuthModal = openAuthModal;
   window.closeModal = closeModal;
+  window.saveSecretaryMemo = saveSecretaryMemo;
+  window.draftSecretaryPlanFromTasks = draftSecretaryPlanFromTasks;
 
   window.setDateRange = setDateRange;
   window.setProjectFilter = setProjectFilter;
