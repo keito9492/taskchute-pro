@@ -210,6 +210,7 @@
         <div id="view-sync" class="hidden p-4 space-y-4">
           <button onclick="openLocalBackups()" class="w-full bg-slate-100 text-slate-600 text-[10px] font-bold py-2 rounded-lg hover:bg-slate-200 transition">世代バックアップ（端末内）</button>
           <button onclick="exportToCSV()" class="w-full bg-slate-100 text-slate-600 text-[10px] font-bold py-2 rounded-lg hover:bg-slate-200 transition">CSV出力</button>
+          <button onclick="exportToOutlookCSV()" class="w-full bg-blue-50 text-blue-700 text-[10px] font-bold py-2 rounded-lg hover:bg-blue-100 transition">Outlook用CSV出力（半自動）</button>
           <button onclick="backupJSON()" class="w-full bg-slate-100 text-slate-600 text-[10px] font-bold py-2 rounded-lg hover:bg-slate-200 transition">JSONバックアップ</button>
           <label class="block">
             <span class="text-[10px] font-bold text-slate-500">JSON復元</span>
@@ -2176,6 +2177,128 @@ setDateRange(state.data.ui.dateRange || 'today', true);
   /*********************
    * 12) Export / Backup
    *********************/
+  function sectionStartMin(sectionId){
+    if (sectionId === 'morning') return SECTION_BOUNDARIES_MIN.morningStart;
+    if (sectionId === 'forenoon') return SECTION_BOUNDARIES_MIN.forenoonStart;
+    if (sectionId === 'afternoon') return SECTION_BOUNDARIES_MIN.afternoonStart;
+    return SECTION_BOUNDARIES_MIN.eveningStart;
+  }
+
+  function nextSectionStartMin(sectionId){
+    if (sectionId === 'morning') return SECTION_BOUNDARIES_MIN.forenoonStart;
+    if (sectionId === 'forenoon') return SECTION_BOUNDARIES_MIN.afternoonStart;
+    if (sectionId === 'afternoon') return SECTION_BOUNDARIES_MIN.eveningStart;
+    return null;
+  }
+
+  function parseISODateLocal(dateStr){
+    if (!dateStr) return null;
+    var p = String(dateStr).split('-');
+    if (p.length !== 3) return null;
+    var y = Number(p[0]), m = Number(p[1]), d = Number(p[2]);
+    if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) return null;
+    return new Date(y, m - 1, d, 0, 0, 0, 0);
+  }
+
+  function addMinutes(dateObj, minutes){
+    return new Date(dateObj.getTime() + Math.max(0, minutes) * 60000);
+  }
+
+  function fmtOutlookDate(dateObj){
+    return dateObj.getFullYear() + '/' + pad(dateObj.getMonth() + 1) + '/' + pad(dateObj.getDate());
+  }
+
+  function fmtOutlookTime(dateObj){
+    return pad(dateObj.getHours()) + ':' + pad(dateObj.getMinutes());
+  }
+
+  function escapeCSVCell(v){
+    var s = String(v ?? '');
+    return (s.includes(',') || s.includes('"') || s.includes('\n')) ? '"' + s.replaceAll('"','""') + '"' : s;
+  }
+
+  function exportToOutlookCSV(){
+    var targets = state.data.tasks.filter(function(t){
+      return !!t.date && t.status !== 'completed';
+    }).slice().sort(function(a,b){
+      var ad = a.date || '9999-12-31';
+      var bd = b.date || '9999-12-31';
+      if (ad !== bd) return ad.localeCompare(bd);
+      var ai = sectionStartMin(a.sectionId || 'afternoon');
+      var bi = sectionStartMin(b.sectionId || 'afternoon');
+      if (ai !== bi) return ai - bi;
+      return (Number(a.priority) || 3) - (Number(b.priority) || 3);
+    });
+
+    if (!targets.length){
+      toast('Outlook出力対象がありません（実行予定日あり・未完了）');
+      return;
+    }
+
+    var rows = [[
+      'Subject',
+      'Start Date',
+      'Start Time',
+      'End Date',
+      'End Time',
+      'All day event',
+      'Description',
+      'Location',
+      'Private',
+      'Categories'
+    ]];
+
+    targets.forEach(function(t){
+      var base = parseISODateLocal(t.date);
+      if (!base) return;
+
+      var sectionId = t.sectionId || 'afternoon';
+      var startMin = sectionStartMin(sectionId);
+      var nextMin = nextSectionStartMin(sectionId);
+      var estimate = Math.max(15, Number(t.estimateMin) || 30);
+      var endMin = startMin + estimate;
+      if (nextMin != null) endMin = Math.min(endMin, nextMin);
+
+      var startAt = addMinutes(base, startMin);
+      var endAt = addMinutes(base, endMin);
+
+      var projectName = (getProject(t.projectId) && getProject(t.projectId).name) ? getProject(t.projectId).name : 'INBOX';
+      var sectionName = (getSection(sectionId) && getSection(sectionId).name) ? getSection(sectionId).name : sectionId;
+      var subject = '[TaskChute] ' + (t.name || '(無題)');
+      var desc = [
+        'プロジェクト: ' + projectName,
+        '時間枠: ' + sectionName,
+        '見積: ' + fmtMin(t.estimateMin),
+        '優先度: ' + String(t.priority ?? 3),
+        '備考: ' + String(t.notes || '').replaceAll('\n', ' / ')
+      ].join(' | ');
+
+      rows.push([
+        subject,
+        fmtOutlookDate(startAt),
+        fmtOutlookTime(startAt),
+        fmtOutlookDate(endAt),
+        fmtOutlookTime(endAt),
+        'False',
+        desc,
+        '',
+        'False',
+        projectName
+      ]);
+    });
+
+    var csv = rows.map(function(r){ return r.map(escapeCSVCell).join(','); }).join('\n');
+    var blob = new Blob(['\uFEFF' + csv], {type:'text/csv;charset=utf-8'});
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'taskchute_outlook_' + nowISODate() + '.csv';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
+    toast('Outlook用CSVを出力しました');
+  }
+
   function exportToCSV(){
     var rows = [[ 'id','name','project','section','estimateMin','actualMin','date','repeat','status','priority','isInterrupt','notes','createdAt','updatedAt','startedAt' ]];
     state.data.tasks.forEach(function(t){
@@ -2423,6 +2546,7 @@ setDateRange(state.data.ui.dateRange || 'today', true);
   window.loopTaskFromModal = loopTaskFromModal;
 
   window.exportToCSV = exportToCSV;
+  window.exportToOutlookCSV = exportToOutlookCSV;
   window.backupJSON = backupJSON;
   window.restoreJSON = restoreJSON;
   window.clearData = clearData;
